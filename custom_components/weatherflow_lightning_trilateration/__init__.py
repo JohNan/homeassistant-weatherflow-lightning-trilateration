@@ -103,6 +103,7 @@ class TempestStrikeCoordinator:
         self.entry = entry
         self.strike_buffer = {}
         self.station_coords = {}
+        self.device_to_station = {}
 
         self.primary_station = str(entry.data.get(CONF_PRIMARY_STATION, "")).strip()
         neighbor_raw = str(entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
@@ -233,6 +234,13 @@ class TempestStrikeCoordinator:
                         ):
                             self.station_coords[station_id] = (float(lat), float(lon))
                             detected.append(station_id)
+
+                            # Extract and map devices for public stations
+                            devices = station.get("devices", [])
+                            for device in devices:
+                                dev_id = str(device.get("device_id", ""))
+                                if dev_id and dev_id.isdigit():
+                                    self.device_to_station[dev_id] = station_id
                     _LOGGER.info(
                         "Discovered %d nearby public WeatherFlow stations: %s",
                         len(detected),
@@ -247,6 +255,66 @@ class TempestStrikeCoordinator:
             _LOGGER.error("Error querying nearby WeatherFlow stations: %s", e)
 
         return detected
+
+    async def _async_resolve_stations_metadata(self) -> None:
+        """Resolve device IDs and coordinates for all configured and discovered stations."""
+        if not self.api_token:
+            # Fallback mapping: assume device_id is station_id
+            for station in self.all_stations:
+                if "," not in station and station.strip().isdigit():
+                    self.device_to_station[station] = station
+            return
+
+        session = async_get_clientsession(self.hass)
+
+        for station_id in list(self.all_stations):
+            if "," in station_id or not station_id.strip().isdigit():
+                continue
+
+            url = f"https://swd.weatherflow.com/swd/rest/stations/{station_id}"
+            params = {"token": self.api_token}
+            try:
+                async with session.get(url, params=params, timeout=10) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        stations = data.get("stations", [])
+                        for station in stations:
+                            lat = station.get("latitude")
+                            lon = station.get("longitude")
+                            if lat is not None and lon is not None:
+                                self.station_coords[station_id] = (
+                                    float(lat),
+                                    float(lon),
+                                )
+
+                            devices = station.get("devices", [])
+                            for device in devices:
+                                dev_id = str(device.get("device_id", ""))
+                                dev_type = device.get("device_type")
+                                if dev_id and dev_id.isdigit():
+                                    self.device_to_station[dev_id] = station_id
+                                    _LOGGER.debug(
+                                        "Mapped device %s (%s) to station %s",
+                                        dev_id,
+                                        dev_type,
+                                        station_id,
+                                    )
+                    else:
+                        _LOGGER.warning(
+                            "Failed to resolve metadata for station %s: HTTP %d",
+                            station_id,
+                            response.status,
+                        )
+            except Exception as e:
+                _LOGGER.error(
+                    "Error resolving metadata for station %s: %s", station_id, e
+                )
+
+        # Fallback mapping for any station that failed to resolve or has no mapped devices
+        for station in self.all_stations:
+            if "," not in station and station.strip().isdigit():
+                if station not in self.device_to_station.values():
+                    self.device_to_station[station] = station
 
     async def async_stop(self) -> None:
         """Stop the WebSocket listener task."""
@@ -273,6 +341,12 @@ class TempestStrikeCoordinator:
         except Exception as e:
             _LOGGER.exception("Failed to discover nearby public stations: %s", e)
 
+        # Resolve devices and coordinates for all stations
+        try:
+            await self._async_resolve_stations_metadata()
+        except Exception as e:
+            _LOGGER.exception("Failed to resolve station metadata: %s", e)
+
         retry_delay = 5
         while self._running:
             try:
@@ -286,18 +360,18 @@ class TempestStrikeCoordinator:
                 )
                 async with websockets.connect(ws_url) as websocket:
                     retry_delay = 5
-                    for station_id in self.all_stations:
+                    for device_id in self.device_to_station.keys():
                         # Skip subscription if it's a coordinate string or not numeric
-                        if "," in station_id or not station_id.strip().isdigit():
+                        if not device_id.strip().isdigit():
                             continue
 
                         sub_msg = {
                             "type": "listen_start",
-                            "device_id": int(station_id),
-                            "id": f"sub_{station_id}",
+                            "device_id": int(device_id),
+                            "id": f"sub_{device_id}",
                         }
                         await websocket.send(json.dumps(sub_msg))
-                        _LOGGER.debug("Subscribed to station: %s", station_id)
+                        _LOGGER.debug("Subscribed to device: %s", device_id)
 
                     async for message in websocket:
                         try:
@@ -375,6 +449,9 @@ class TempestStrikeCoordinator:
         timestamp = int(evt[0])
         distance = float(evt[1])
 
+        # Map device_id to station_id
+        station_id = self.device_to_station.get(device_id, device_id)
+
         # Find or create a group bucket matching timestamp within a 1-second variance tolerance
         matched_timestamp = None
         for bucket_ts in list(self.strike_buffer.keys()):
@@ -386,7 +463,7 @@ class TempestStrikeCoordinator:
             matched_timestamp = timestamp
             self.strike_buffer[matched_timestamp] = {}
 
-        self.strike_buffer[matched_timestamp][device_id] = distance
+        self.strike_buffer[matched_timestamp][station_id] = distance
 
         # Check if the bucket has at least 3 unique station reports
         bucket = self.strike_buffer[matched_timestamp]
