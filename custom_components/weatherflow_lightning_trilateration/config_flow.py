@@ -15,18 +15,20 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
         errors = {}
+        detected_station = self._detect_local_station()
+
         if user_input is not None:
             primary = user_input.get(CONF_PRIMARY_STATION, "").strip()
             if not primary:
                 errors[CONF_PRIMARY_STATION] = "empty_primary"
+            elif not detected_station:
+                errors["base"] = "no_local_station"
             else:
                 return self.async_create_entry(
                     title=f"WeatherFlow Trilateration ({primary})",
                     data=user_input,
                 )
 
-        # Detect local station or fall back to HA coordinates
-        detected_station = self._detect_local_station()
         if detected_station:
             default_primary = detected_station
         else:
@@ -46,7 +48,12 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
         return self.async_show_form(
-            step_id="user", data_schema=data_schema, errors=errors
+            step_id="user",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "local_station_id": detected_station or "172103",
+            },
         )
 
     def _detect_local_station(self) -> str | None:
