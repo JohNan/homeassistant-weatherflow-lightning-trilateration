@@ -22,7 +22,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.initVisualizer();
     } else {
       const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+      script.src = '/weatherflow_lightning_trilateration/three.min.js';
       script.onload = () => this.initVisualizer();
       document.head.appendChild(script);
     }
