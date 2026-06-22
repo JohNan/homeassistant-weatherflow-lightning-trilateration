@@ -13,7 +13,9 @@ A native Home Assistant custom integration that connects to the WeatherFlow Temp
 - **WebSocket Listener:** Connects directly to the official WeatherFlow WebSocket stream.
 - **Auto-Discovery:** Automatically detects configured local weather station IDs from existing official/third-party WeatherFlow integrations.
 - **Trilateration Engine:** Employs a flat-plane Cramer's rule approximation to dynamically calculate the intersection of lightning strike distances from 3 or more stations.
-- **Map Visualizations:** Places temporary geolocation markers representing strikes on the map, which automatically disappear after 15 minutes.
+- **Map Visualizations:** Places temporary geolocation markers representing strikes on the map, which automatically disappear after 6 hours.
+- **Simulation/Testing Service:** Exposes a custom service to trigger simulated strikes anywhere, allowing end-to-end testing of map markers and dashboard animations.
+- **3D Dashboard Card:** Includes a custom WebGL Lovelace dashboard card visualizing strikes, shockwaves, and expanding trilateration range intersection spheres in 3D.
 - **Robust Connection Handling:** Automatically handles connection drops with exponential backoff retries.
 
 ---
@@ -21,34 +23,51 @@ A native Home Assistant custom integration that connects to the WeatherFlow Temp
 ## Project Structure
 
 ```text
+.agents/
+└── AGENTS.md            # Coding standards & architectural rules
+.github/workflows/
+├── hacs.yaml            # HACS repository validation
+├── hassfest.yaml        # Home Assistant code structure validation
+└── lint.yaml            # Code linting (Ruff/Black/Isort)
 custom_components/weatherflow_lightning_trilateration/
-├── __init__.py          # Life-cycle hooks & WebSockets connection coordinator
+├── __init__.py          # Life-cycle hooks, coordinator, and services
 ├── config_flow.py       # Integration setup flow UI logic & auto-discovery
 ├── const.py             # Centralized constant definitions
 ├── geo_location.py      # GeolocationEvent entities for map plotting
 ├── manifest.json        # Integration manifest metadata
+├── services.yaml        # Configuration fields for simulate_strike service
 └── translations/
     └── en.json          # English translation strings for Setup UI
+dist/
+└── weatherflow-lightning-card.js   # 3D WebGL Lovelace Custom Card
+hacs.json                # HACS configuration properties
+mise.toml                # Developer environment task orchestrator
 ```
 
 ---
 
 ## Installation
 
-### Method 1: HACS (Recommended)
+### Step 1: Install Custom Component via HACS
 1. Open **HACS** in your Home Assistant instance.
 2. Click the three dots in the top right corner and select **Custom repositories**.
 3. Add the repository URL `https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration` under the **Integration** category.
 4. Click **Download**.
 5. Restart Home Assistant.
 
-### Method 2: Manual
-1. Copy the `custom_components/weatherflow_lightning_trilateration` directory to your Home Assistant configuration directory.
-2. Restart Home Assistant.
+### Step 2: Configure Custom Lovelace Card
+1. Move the `dist/weatherflow-lightning-card.js` script to your local Home Assistant `www/` directory.
+2. In the Home Assistant UI, navigate to **Settings > Dashboards**.
+3. Click the three dots in the top right corner and select **Resources**.
+4. Click **Add Resource** and enter:
+   - **URL:** `/local/weatherflow-lightning-card.js`
+   - **Resource Type:** `JavaScript Module`
 
 ---
 
 ## Configuration
+
+### Set Up Integration
 1. Navigate to **Settings > Devices & Services**.
 2. Click **Add Integration** and search for **WeatherFlow Lightning Trilateration**.
 3. The Setup UI will search for any local weather stations:
@@ -56,6 +75,23 @@ custom_components/weatherflow_lightning_trilateration/
    - If none is configured, it will suggest the home coordinates from your Home Assistant configuration (`latitude,longitude`).
 4. Enter the **Neighboring Stations** as a comma-separated list of Tempest device IDs (e.g. `1234, 5678`).
 5. Click **Submit** to finalize the setup.
+
+### Dashboard Setup
+Add the custom card to your dashboard code editor:
+```yaml
+type: custom:weatherflow-lightning-card
+height: 400px
+```
+
+---
+
+## Testing & Visual Verification
+To visually test the entire mapping and 3D animation stack without waiting for an actual storm:
+1. Navigate to the **Developer Tools > Services** tab.
+2. Select the service `weatherflow_lightning_trilateration.simulate_strike`.
+3. (Optional) Provide target `latitude` and `longitude` values. If omitted, the system generates random coordinates nearby.
+4. Click **Call Service**.
+5. Check your Home Assistant map card to view the lightning strike marker, and open your custom Lovelace card to view the real-time 3D lightning flash and expanding trilateration ring intersection animation.
 
 ---
 

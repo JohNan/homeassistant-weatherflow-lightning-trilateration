@@ -4,10 +4,13 @@ import asyncio
 import json
 import logging
 import math
+import random
 
+import voluptuous as vol
 import websockets
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
@@ -28,6 +31,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     coordinator.start_websocket_listener()
 
+    # Register service for strike simulation
+    async def async_simulate_strike(service_call) -> None:
+        """Simulate a lightning strike by firing EVENT_STRIKE_CALCULATED."""
+        latitude = service_call.data.get("latitude")
+        longitude = service_call.data.get("longitude")
+
+        if latitude is None:
+            latitude = hass.config.latitude + random.uniform(-0.15, 0.15)
+        if longitude is None:
+            longitude = hass.config.longitude + random.uniform(-0.15, 0.15)
+
+        hass.bus.async_fire(
+            EVENT_STRIKE_CALCULATED,
+            {
+                "latitude": float(latitude),
+                "longitude": float(longitude),
+            },
+        )
+
+    if not hass.services.has_service(DOMAIN, "simulate_strike"):
+        hass.services.async_register(
+            DOMAIN,
+            "simulate_strike",
+            async_simulate_strike,
+            schema=vol.Schema(
+                {
+                    vol.Optional("latitude"): cv.latitude,
+                    vol.Optional("longitude"): cv.longitude,
+                }
+            ),
+        )
+
     await hass.config_entries.async_forward_entry_setups(entry, ["geo_location"])
     return True
 
@@ -40,6 +75,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         coordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coordinator.async_stop()
+
+        # Unregister service if there are no more active entries for DOMAIN
+        if not hass.data[DOMAIN]:
+            if hass.services.has_service(DOMAIN, "simulate_strike"):
+                hass.services.async_remove(DOMAIN, "simulate_strike")
     return unload_ok
 
 
