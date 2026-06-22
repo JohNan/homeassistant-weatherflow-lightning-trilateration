@@ -1,6 +1,6 @@
 """Config flow for WeatherFlow Lightning Trilateration integration."""
-import voluptuous as vol
 
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers import device_registry as dr
 
@@ -72,10 +72,7 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     entry = self.hass.config_entries.async_get_entry(entry_id)
                     if entry and entry.domain in target_domains:
                         for identifier in device_entry.identifiers:
-                            if (
-                                len(identifier) == 2
-                                and identifier[0] == entry.domain
-                            ):
+                            if len(identifier) == 2 and identifier[0] == entry.domain:
                                 val = str(identifier[1])
                                 if val.isdigit():
                                     return val

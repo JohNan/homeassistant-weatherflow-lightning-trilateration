@@ -1,11 +1,11 @@
 """Core initialization for WeatherFlow Lightning Trilateration integration."""
+
 import asyncio
 import json
 import logging
 import math
 
 import websockets
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -115,7 +115,9 @@ class TempestStrikeCoordinator:
                                     if parts[-1].isdigit():
                                         detected.append(parts[-1])
         except Exception as e:
-            _LOGGER.warning("Error querying device registry for WeatherFlow stations: %s", e)
+            _LOGGER.warning(
+                "Error querying device registry for WeatherFlow stations: %s", e
+            )
 
         # Deduplicate and filter out empty strings
         return list(set(s for s in detected if s))

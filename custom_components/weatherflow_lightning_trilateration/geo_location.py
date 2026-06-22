@@ -1,4 +1,5 @@
 """Geolocation platform for WeatherFlow Lightning Trilateration integration."""
+
 import logging
 import time
 
@@ -7,7 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN, EVENT_STRIKE_CALCULATED
+from .const import EVENT_STRIKE_CALCULATED
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,9 +26,7 @@ async def async_setup_entry(
     )
     entry.async_on_unload(remove_listener)
 
-    entry.async_on_unload(
-        lambda: _ADD_ENTITIES_CALLBACKS.remove(async_add_entities)
-    )
+    entry.async_on_unload(lambda: _ADD_ENTITIES_CALLBACKS.remove(async_add_entities))
 
 
 @callback
