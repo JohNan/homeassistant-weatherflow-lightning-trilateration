@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_API_TOKEN,
@@ -101,6 +102,7 @@ class TempestStrikeCoordinator:
         self.hass = hass
         self.entry = entry
         self.strike_buffer = {}
+        self.station_coords = {}
 
         self.primary_station = str(entry.data.get(CONF_PRIMARY_STATION, "")).strip()
         neighbor_raw = str(entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
@@ -109,6 +111,18 @@ class TempestStrikeCoordinator:
         ]
         self.api_token = str(entry.data.get(CONF_API_TOKEN, "")).strip()
         self.all_stations = [self.primary_station] + self.neighbor_stations
+
+        # Parse coordinate if primary station is coordinates
+        ref_lat = hass.config.latitude
+        ref_lon = hass.config.longitude
+        if "," in self.primary_station:
+            try:
+                parts = self.primary_station.split(",")
+                ref_lat = float(parts[0])
+                ref_lon = float(parts[1])
+                self.station_coords[self.primary_station] = (ref_lat, ref_lon)
+            except ValueError:
+                pass
 
         self._listener_task = None
         self._running = False
@@ -173,6 +187,67 @@ class TempestStrikeCoordinator:
         # Deduplicate and filter out empty strings
         return list(set(s for s in detected if s))
 
+    async def _async_detect_nearby_public_stations(self) -> list[str]:
+        """Query the WeatherFlow REST API to discover nearby public stations."""
+        if not self.api_token:
+            _LOGGER.debug("No API token configured; skipping public station discovery")
+            return []
+
+        ref_lat = self.hass.config.latitude
+        ref_lon = self.hass.config.longitude
+
+        primary_station = self.all_stations[0]
+        if "," in primary_station:
+            try:
+                parts = primary_station.split(",")
+                ref_lat = float(parts[0])
+                ref_lon = float(parts[1])
+            except ValueError:
+                pass
+
+        url = "https://swd.weatherflow.com/swd/rest/metadata/network/stations"
+        # Search radius: 50km (50,000 meters)
+        params = {
+            "token": self.api_token,
+            "center_lat": ref_lat,
+            "center_lon": ref_lon,
+            "radius": 50000,
+        }
+
+        detected = []
+        try:
+            session = async_get_clientsession(self.hass)
+            async with session.get(url, params=params, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    stations = data.get("stations", [])
+                    for station in stations:
+                        station_id = str(station.get("station_id", ""))
+                        lat = station.get("latitude")
+                        lon = station.get("longitude")
+                        if (
+                            station_id
+                            and station_id.isdigit()
+                            and lat is not None
+                            and lon is not None
+                        ):
+                            self.station_coords[station_id] = (float(lat), float(lon))
+                            detected.append(station_id)
+                    _LOGGER.info(
+                        "Discovered %d nearby public WeatherFlow stations: %s",
+                        len(detected),
+                        detected,
+                    )
+                else:
+                    _LOGGER.warning(
+                        "Failed to query nearby WeatherFlow stations: HTTP %d",
+                        response.status,
+                    )
+        except Exception as e:
+            _LOGGER.error("Error querying nearby WeatherFlow stations: %s", e)
+
+        return detected
+
     async def async_stop(self) -> None:
         """Stop the WebSocket listener task."""
         self._running = False
@@ -186,6 +261,18 @@ class TempestStrikeCoordinator:
 
     async def _async_listen_loop(self) -> None:
         """Handle the infinite WebSocket connection loop."""
+        # Discover nearby public stations first
+        try:
+            nearby_stations = await self._async_detect_nearby_public_stations()
+            for station in nearby_stations:
+                if station not in self.all_stations:
+                    self.all_stations.append(station)
+                    _LOGGER.info(
+                        "Added nearby public station %s to calculations", station
+                    )
+        except Exception as e:
+            _LOGGER.exception("Failed to discover nearby public stations: %s", e)
+
         retry_delay = 5
         while self._running:
             try:
@@ -239,6 +326,9 @@ class TempestStrikeCoordinator:
 
     def _get_station_coords(self, device_id: str):
         """Retrieve coordinates for a specific station ID."""
+        if device_id in self.station_coords:
+            return self.station_coords[device_id]
+
         # 1. Resolve primary station coordinate reference
         ref_lat = self.hass.config.latitude
         ref_lon = self.hass.config.longitude
