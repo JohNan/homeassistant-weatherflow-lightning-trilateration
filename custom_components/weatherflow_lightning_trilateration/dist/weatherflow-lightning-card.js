@@ -13,8 +13,24 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.strikeLayer = null;
   }
 
+  static getConfigElement() {
+    return document.createElement("weatherflow-lightning-card-editor");
+  }
+
+  static getStubConfig() {
+    return {
+      height: "350px"
+    };
+  }
+
   setConfig(config) {
+    if (!config) {
+      throw new Error("Invalid configuration");
+    }
     this.config = config;
+    if (this.container) {
+      this.container.style.height = this.config.height || '350px';
+    }
   }
 
   connectedCallback() {
@@ -365,3 +381,92 @@ window.customCards.push({
   name: "WeatherFlow Lightning Trilateration Card",
   description: "WebGL 3D visualizer showing real-time lightning strike trilaterations."
 });
+
+class WeatherFlowLightningCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+  }
+
+  setConfig(config) {
+    this._config = config;
+    if (!this._initializedEditor) {
+      this.render();
+      this._initializedEditor = true;
+    } else {
+      const heightInput = this.shadowRoot.getElementById('height');
+      if (heightInput) {
+        heightInput.value = this._config.height || '350px';
+      }
+    }
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+  }
+
+  render() {
+    if (!this._config) return;
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        .card-config {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .paper-input-container {
+          display: flex;
+          flex-direction: column;
+        }
+        label {
+          color: var(--secondary-text-color, #727272);
+          font-size: 12px;
+          margin-bottom: 4px;
+        }
+        input {
+          padding: 8px;
+          background: var(--card-background-color, transparent);
+          color: var(--primary-text-color, #212121);
+          border: 0;
+          border-bottom: 1px solid var(--divider-color, #e0e0e0);
+          font-family: inherit;
+        }
+        input:focus {
+          outline: none;
+          border-bottom: 2px solid var(--primary-color, #03a9f4);
+        }
+      </style>
+      <div class="card-config">
+        <div class="paper-input-container">
+          <label for="height">Height (e.g. 350px)</label>
+          <input type="text" id="height" value="${this._config.height || '350px'}">
+        </div>
+      </div>
+    `;
+
+    const heightInput = this.shadowRoot.getElementById('height');
+    heightInput.addEventListener('input', (e) => this.configChanged(e));
+  }
+
+  configChanged(e) {
+    if (!this._config) return;
+
+    const target = e.target;
+    if (this._config[target.id] === target.value) return;
+
+    const newConfig = {
+      ...this._config,
+      [target.id]: target.value,
+    };
+
+    const event = new CustomEvent("config-changed", {
+      detail: { config: newConfig },
+      bubbles: true,
+      composed: true,
+    });
+    this.dispatchEvent(event);
+  }
+}
+
+customElements.define("weatherflow-lightning-card-editor", WeatherFlowLightningCardEditor);
