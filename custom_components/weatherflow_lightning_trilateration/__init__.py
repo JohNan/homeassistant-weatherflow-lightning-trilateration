@@ -9,6 +9,7 @@ import random
 
 import voluptuous as vol
 import websockets
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
@@ -68,10 +69,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Register static path for the custom Lovelace card
     dist_dir = os.path.join(os.path.dirname(__file__), "dist")
-    hass.http.register_static_path(
-        "/weatherflow_lightning_trilateration",
-        dist_dir,
-        cache_headers=False,
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(
+                "/weatherflow_lightning_trilateration",
+                dist_dir,
+                cache_headers=False,
+            )
+        ]
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, ["geo_location"])
