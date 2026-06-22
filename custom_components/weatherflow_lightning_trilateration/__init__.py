@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import random
+import ssl
 
 import voluptuous as vol
 import websockets
@@ -352,6 +353,15 @@ class TempestStrikeCoordinator:
         except Exception as e:
             _LOGGER.exception("Failed to resolve station metadata: %s", e)
 
+        # Create SSL context in executor to avoid blocking call in event loop
+        try:
+            ssl_context = await self.hass.async_add_executor_job(
+                ssl.create_default_context
+            )
+        except Exception as e:
+            _LOGGER.error("Failed to create SSL context: %s", e)
+            ssl_context = None
+
         retry_delay = 5
         while self._running:
             try:
@@ -363,7 +373,7 @@ class TempestStrikeCoordinator:
                     "Connecting to Tempest WebSocket: %s",
                     ws_url.replace(self.api_token, "***") if self.api_token else ws_url,
                 )
-                async with websockets.connect(ws_url) as websocket:
+                async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
                     retry_delay = 5
                     for device_id in self.device_to_station.keys():
                         # Skip subscription if it's a coordinate string or not numeric
