@@ -13,6 +13,7 @@
     },
     "error": {
       "empty_primary": "The primary station ID or coordinate cannot be empty.",
+      "invalid_station_id": "The primary station ID appears to be a device serial number (e.g. 00172794). Please enter a valid station ID (e.g. 172103) or ensure your API Token is correct to auto-resolve it.",
       "no_local_station": "No local WeatherFlow station was detected. Please configure a local WeatherFlow integration in Home Assistant first."
     }
   }
