@@ -4,7 +4,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers import device_registry as dr
 
-from .const import CONF_NEIGHBOR_STATIONS, CONF_PRIMARY_STATION, DOMAIN
+from .const import CONF_API_TOKEN, CONF_NEIGHBOR_STATIONS, CONF_PRIMARY_STATION, DOMAIN
 
 
 class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -34,10 +34,14 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 f"{self.hass.config.latitude},{self.hass.config.longitude}"
             )
 
+        # Detect local token
+        default_token = self._detect_local_token()
+
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_PRIMARY_STATION, default=default_primary): str,
                 vol.Optional(CONF_NEIGHBOR_STATIONS, default=""): str,
+                vol.Optional(CONF_API_TOKEN, default=default_token): str,
             }
         )
 
@@ -84,3 +88,20 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             pass
 
         return None
+
+    def _detect_local_token(self) -> str:
+        """Detect local API token from official integrations."""
+        target_domains = {
+            "weatherflow",
+            "weatherflow_cloud",
+        }
+
+        for domain in target_domains:
+            for entry in self.hass.config_entries.async_entries(domain):
+                for key in ("api_token", "token"):
+                    val = entry.data.get(key) or entry.options.get(key)
+                    if val:
+                        val_str = str(val).strip()
+                        if val_str:
+                            return val_str
+        return ""
