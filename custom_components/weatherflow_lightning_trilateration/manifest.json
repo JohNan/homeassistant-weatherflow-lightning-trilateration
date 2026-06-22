@@ -1,6 +1,7 @@
 {
   "domain": "weatherflow_lightning_trilateration",
   "name": "WeatherFlow Lightning Trilateration",
+  "config_flow": true,
   "requirements": [
     "websockets>=12.0"
   ],
