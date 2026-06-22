@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "WeatherFlow Lightning Trilateration",
+        "description": "Configure the weather stations for WeatherFlow Lightning strike trilateration.",
+        "data": {
+          "primary_station": "Primary Station (ID or coordinates as lat,lon)",
+          "neighbor_stations": "Neighboring Stations (comma-separated IDs)"
+        }
+      }
+    },
+    "error": {
+      "empty_primary": "The primary station ID or coordinate cannot be empty."
+    }
+  }
+}

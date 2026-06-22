@@ -1,0 +1,10 @@
+{
+  "domain": "weatherflow_lightning_trilateration",
+  "name": "WeatherFlow Lightning Trilateration",
+  "requirements": [
+    "websockets>=12.0"
+  ],
+  "iot_class": "cloud_push",
+  "version": "1.0.0",
+  "codeowners": []
+}
