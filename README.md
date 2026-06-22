@@ -70,11 +70,19 @@ The 3D WebGL Lovelace card is automatically downloaded and served by the integra
 ### Set Up Integration
 1. Navigate to **Settings > Devices & Services**.
 2. Click **Add Integration** and search for **WeatherFlow Lightning Trilateration**.
-3. The Setup UI will search for any local weather stations:
-   - If found, it will suggest the detected station ID as the **Primary Station**.
-   - If none is configured, it will suggest the home coordinates from your Home Assistant configuration (`latitude,longitude`).
-4. Enter the **Neighboring Stations** as a comma-separated list of Tempest device IDs (e.g. `1234, 5678`).
-5. Click **Submit** to finalize the setup.
+3. Configure the integration options:
+   - **Primary Station**: Enter your Tempest station ID (e.g. `172103` from [your station page](https://tempestwx.com/station/172103/)). If none is configured, it will default to the home coordinates from your Home Assistant configuration (`latitude,longitude`).
+   - **Neighboring Stations**: Enter a comma-separated list of nearby station IDs (e.g. `81149, 12345`) to use for trilateration.
+   - **API Token**: A Personal Access Token. To generate one:
+     1. Log in to the [Tempest Web App](https://tempestwx.com/).
+     2. Navigate to **Settings > Data Authorizations**.
+     3. Click **Create Token** and copy the resulting token string.
+4. **How to Find Nearby Stations**:
+   - Open the [Tempest Map](https://tempestwx.com/map/) and locate your station.
+   - Click on neighboring stations surrounding yours on the map.
+   - Extract the station ID from their URLs (for example, in `https://tempestwx.com/station/81149/`, the ID is `81149`).
+   - Configure at least 2 neighboring station IDs.
+5. Click **Submit** to finalize the setup. The integration will automatically query the WeatherFlow API using your token to resolve coordinates and device IDs for all configured neighboring stations.
 
 ### Dashboard Setup
 Add the custom card to your dashboard code editor:
