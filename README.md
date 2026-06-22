@@ -103,6 +103,17 @@ To visually test the entire mapping and 3D animation stack without waiting for a
 
 ---
 
+## Troubleshooting & FAQs
+
+### The Integration Icon/Logo is Not Loading
+* **Home Assistant Version Requirement**: Local branding folders (where custom integrations serve their own brand icons locally) require **Home Assistant 2026.3** or newer. If you are running an older version, Home Assistant will fall back to querying the Home Assistant Brands CDN (which will return a 404 since this is a custom integration).
+* **Caching Issues**: If you are on Home Assistant 2026.3+ and the icon still does not load, the browser has cached the missing brand image. Perform a hard refresh to force reload the brand assets (e.g. `Ctrl + F5` on Windows/Linux or `Cmd + Shift + R` on macOS).
+
+### Custom Element Not Found: weatherflow-lightning-card
+* **Automatic Resource Registration**: The integration automatically registers the Lovelace card resource `/weatherflow_lightning_trilateration/weatherflow-lightning-card.js` on startup. If you see this error, ensure the integration has fully loaded and then perform a hard refresh in your browser to reload the resources.
+
+---
+
 ## Mathematical Design
 The trilateration algorithm projects spherical geodetic coordinates to a local Cartesian plane relative to the primary station coordinates (using an Equirectangular projection). Given three non-collinear stations $S_i$ with known coordinates $(x_i, y_i)$ and strike distances $d_i$:
 
