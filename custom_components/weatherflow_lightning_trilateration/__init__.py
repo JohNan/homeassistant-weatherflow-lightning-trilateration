@@ -80,6 +80,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ]
     )
 
+    # Register Lovelace resource automatically
+    async def _register_resource(event=None) -> None:
+        try:
+            await _async_register_lovelace_resource(hass)
+        except Exception as e:
+            _LOGGER.warning("Could not automatically register Lovelace resource: %s", e)
+
+    if hass.is_running:
+        await _register_resource()
+    else:
+        hass.bus.async_listen_once("homeassistant_started", _register_resource)
+
     await hass.config_entries.async_forward_entry_setups(entry, ["geo_location"])
     return True
 
@@ -569,3 +581,43 @@ class TempestStrikeCoordinator:
                 "longitude": calculated_longitude,
             },
         )
+
+
+async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
+    """Register custom Lovelace resource automatically."""
+    lovelace = hass.data.get("lovelace")
+    if not lovelace:
+        return
+
+    resources = getattr(lovelace, "resources", None)
+    if not resources:
+        return
+
+    if hasattr(resources, "loaded") and not resources.loaded:
+        if hasattr(resources, "async_load"):
+            await resources.async_load()
+
+    url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
+
+    is_registered = False
+    if hasattr(resources, "async_items"):
+        for item in resources.async_items():
+            if isinstance(item, dict) and item.get("url") == url:
+                is_registered = True
+                break
+            elif hasattr(item, "url") and getattr(item, "url") == url:
+                is_registered = True
+                break
+
+    if is_registered:
+        _LOGGER.debug("Lovelace resource already registered: %s", url)
+        return
+
+    if hasattr(resources, "async_create_item"):
+        await resources.async_create_item(
+            {
+                "res_type": "module",
+                "url": url,
+            }
+        )
+        _LOGGER.info("Registered Lovelace resource: %s", url)
