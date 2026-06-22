@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WeatherFlow Lightning Trilateration 3D Visualizer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-glass: rgba(10, 15, 30, 0.7);
+            --border-glass: rgba(0, 191, 255, 0.15);
+            --glow-cyan: 0 0 15px rgba(0, 191, 255, 0.6);
+            --text-glow: 0 0 8px rgba(255, 255, 255, 0.5);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #02040a;
+            font-family: 'Outfit', sans-serif;
+            color: #e2e8f0;
+        }
+
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* Glassmorphism Dashboard */
+        .glass-panel {
+            position: absolute;
+            z-index: 10;
+            background: var(--bg-glass);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+        }
+
+        #header {
+            top: 24px;
+            left: 24px;
+            right: 24px;
+            height: 80px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #header h1 {
+            font-size: 24px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            background: linear-gradient(45deg, #00f2fe 0%, #4facfe 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-transform: uppercase;
+            text-shadow: var(--glow-cyan);
+        }
+
+        .subtitle {
+            font-size: 12px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-top: 4px;
+        }
+
+        .telemetry-row {
+            display: flex;
+            gap: 24px;
+        }
+
+        .telemetry-item {
+            text-align: right;
+        }
+
+        .telemetry-val {
+            font-family: 'Space Mono', monospace;
+            font-size: 20px;
+            font-weight: 600;
+            color: #00f2fe;
+            text-shadow: var(--glow-cyan);
+        }
+
+        .telemetry-lbl {
+            font-size: 10px;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        #control-panel {
+            bottom: 24px;
+            left: 24px;
+            width: 320px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .panel-title {
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #38bdf8;
+            border-bottom: 1px solid rgba(56, 189, 248, 0.2);
+            padding-bottom: 8px;
+            margin-bottom: 4px;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .control-label {
+            font-size: 11px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #00b4db 0%, #0083b0 100%);
+            border: 1px solid rgba(0, 191, 255, 0.3);
+            border-radius: 8px;
+            color: #fff;
+            padding: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 131, 176, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 191, 255, 0.4);
+            border-color: #00f2fe;
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        #log-panel {
+            top: 128px;
+            right: 24px;
+            bottom: 24px;
+            width: 380px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .log-container {
+            flex-grow: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 12px;
+            padding-right: 8px;
+        }
+
+        /* Scrollbar customization */
+        .log-container::-webkit-scrollbar {
+            width: 4px;
+        }
+        .log-container::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.1);
+        }
+        .log-container::-webkit-scrollbar-thumb {
+            background: rgba(56, 189, 248, 0.3);
+            border-radius: 2px;
+        }
+
+        .log-entry {
+            background: rgba(2, 6, 23, 0.4);
+            border-left: 3px solid #ef4444;
+            border-radius: 0 8px 8px 0;
+            padding: 12px;
+            font-size: 12px;
+            animation: slideIn 0.3s ease-out;
+            transition: all 0.3s ease;
+        }
+
+        .log-entry.active-trilateration {
+            border-left-color: #00f2fe;
+        }
+
+        .log-time {
+            font-family: 'Space Mono', monospace;
+            color: #64748b;
+            font-size: 10px;
+            margin-bottom: 4px;
+        }
+
+        .log-details {
+            font-family: 'Space Mono', monospace;
+            color: #e2e8f0;
+            margin-top: 4px;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+
+        .highlight-cyan {
+            color: #00f2fe;
+            text-shadow: 0 0 5px rgba(0,242,254,0.3);
+        }
+
+        .highlight-red {
+            color: #ef4444;
+            text-shadow: 0 0 5px rgba(239,68,68,0.3);
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+
+    <!-- Header Panel -->
+    <div id="header" class="glass-panel">
+        <div>
+            <h1>WeatherFlow 3D Lightning Visualizer</h1>
+            <div class="subtitle">Real-time Trilateration Engine</div>
+        </div>
+        <div class="telemetry-row">
+            <div class="telemetry-item">
+                <div class="telemetry-val" id="strike-count">0</div>
+                <div class="telemetry-lbl">Total Strikes</div>
+            </div>
+            <div class="telemetry-item">
+                <div class="telemetry-val" id="active-stations">3</div>
+                <div class="telemetry-lbl">Active Grid Stations</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Control Panel -->
+    <div id="control-panel" class="glass-panel">
+        <div class="panel-title">Visualization Controls</div>
+        <div class="control-group">
+            <button class="btn" id="btn-trigger">Trigger Lightning Strike</button>
+        </div>
+        <div class="control-group">
+            <div class="control-label">Simulation Speed</div>
+            <input type="range" id="sim-speed" min="1" max="10" value="5" style="width: 100%; accent-color: #00f2fe;">
+        </div>
+    </div>
+
+    <!-- Real-time Activity Log -->
+    <div id="log-panel" class="glass-panel">
+        <div class="panel-title">Grid Activity Telemetry</div>
+        <div class="log-container" id="log-container">
+            <div class="log-entry active-trilateration">
+                <div class="log-time">SYSTEM STATUS: INITIALIZED</div>
+                <div>Listening for Tempest sensor UDP/WebSocket broadcasts...</div>
+                <div class="log-details">Grid primary at <span class="highlight-cyan">Home Zone Reference</span>. Neighboring arrays synchronized.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Three.js CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // --- WebGL Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x02040a, 0.005);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 15, 30);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setClearColor(0x02040a, 1);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        // --- Lights ---
+        const ambientLight = new THREE.AmbientLight(0x0f172a, 1.5);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0x38bdf8, 1);
+        dirLight.position.set(5, 10, 7);
+        scene.add(dirLight);
+
+        // --- Starfield ---
+        const starsGeo = new THREE.BufferGeometry();
+        const starsCount = 2000;
+        const starsPos = new Float32Array(starsCount * 3);
+        for(let i=0; i<starsCount*3; i+=3) {
+            const radius = 100 + Math.random() * 200;
+            const u = Math.random();
+            const v = Math.random();
+            const theta = u * 2.0 * Math.PI;
+            const phi = Math.acos(2.0 * v - 1.0);
+            starsPos[i] = radius * Math.sin(phi) * Math.cos(theta);
+            starsPos[i+1] = radius * Math.sin(phi) * Math.sin(theta);
+            starsPos[i+2] = radius * Math.cos(phi);
+        }
+        starsGeo.setAttribute('position', new THREE.BufferAttribute(starsPos, 3));
+        const starsMat = new THREE.PointsMaterial({
+            color: 0xffffff,
+            size: 0.8,
+            transparent: true,
+            opacity: 0.8
+        });
+        const starField = new THREE.Points(starsGeo, starsMat);
+        scene.add(starField);
+
+        // --- Programmatic Map Grid (Terrain) ---
+        // Generate a futuristic glowing geographic coordinate grid
+        const mapSize = 40;
+        const gridGeo = new THREE.PlaneGeometry(mapSize, mapSize, 40, 40);
+        const gridMat = new THREE.MeshBasicMaterial({
+            color: 0x0c4a6e,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.4
+        });
+        const terrainGrid = new THREE.Mesh(gridGeo, gridMat);
+        terrainGrid.rotation.x = -Math.PI / 2;
+        scene.add(terrainGrid);
+
+        // Add coordinate ring lines
+        const ringsGroup = new THREE.Group();
+        for (let r = 5; r <= 20; r += 5) {
+            const ringGeo = new THREE.RingGeometry(r - 0.05, r + 0.05, 64);
+            const ringMat = new THREE.MeshBasicMaterial({
+                color: 0x0284c7,
+                transparent: true,
+                opacity: 0.15,
+                side: THREE.DoubleSide
+            });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.rotation.x = -Math.PI / 2;
+            ringsGroup.add(ring);
+        }
+        scene.add(ringsGroup);
+
+        // --- Weather Stations ---
+        // Plot 3 non-collinear stations
+        const stations = [
+            { id: "Primary (Home)", x: 0, z: 0, color: 0x00f2fe },
+            { id: "Neighbor 1", x: 10, z: 10, color: 0x38bdf8 },
+            { id: "Neighbor 2", x: -10, z: 10, color: 0x38bdf8 }
+        ];
+
+        const stationMeshes = [];
+        stations.forEach(st => {
+            const group = new THREE.Group();
+            group.position.set(st.x, 0, st.z);
+
+            // Glowing base ring
+            const ringGeo = new THREE.RingGeometry(0.8, 1, 32);
+            const ringMat = new THREE.MeshBasicMaterial({
+                color: st.color,
+                transparent: true,
+                opacity: 0.8,
+                side: THREE.DoubleSide
+            });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.rotation.x = -Math.PI / 2;
+            group.add(ring);
+
+            // Pulsing range cylinder
+            const cylGeo = new THREE.CylinderGeometry(0.1, 0.1, 3, 8);
+            const cylMat = new THREE.MeshBasicMaterial({
+                color: st.color,
+                transparent: true,
+                opacity: 0.6
+            });
+            const cyl = new THREE.Mesh(cylGeo, cylMat);
+            cyl.position.y = 1.5;
+            group.add(cyl);
+
+            // Glow sphere at top
+            const sphereGeo = new THREE.SphereGeometry(0.3, 16, 16);
+            const sphereMat = new THREE.MeshBasicMaterial({
+                color: st.color,
+                transparent: false
+            });
+            const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+            sphere.position.y = 3;
+            group.add(sphere);
+
+            scene.add(group);
+            stationMeshes.push({
+                info: st,
+                mesh: group,
+                pulseVal: Math.random() * Math.PI
+            });
+        });
+
+        // --- Dynamic Elements Group ---
+        const strikeLayer = new THREE.Group();
+        scene.add(strikeLayer);
+
+        // --- Lightning Bolt Generator ---
+        function createLightningPath(start, end, segments = 12) {
+            const points = [];
+            const dir = new THREE.Vector3().subVectors(end, start);
+            const segmentLength = dir.length() / segments;
+
+            points.push(start.clone());
+
+            for (let i = 1; i < segments; i++) {
+                const fraction = i / segments;
+                const point = new THREE.Vector3().addVectors(start, dir.clone().multiplyScalar(fraction));
+
+                // Add random noise perpendicular to the direction
+                const offsetAmount = (1.0 - fraction) * 1.2; // less deviation near target
+                const noiseX = (Math.random() - 0.5) * offsetAmount;
+                const noiseY = (Math.random() - 0.5) * offsetAmount;
+                const noiseZ = (Math.random() - 0.5) * offsetAmount;
+
+                point.add(new THREE.Vector3(noiseX, noiseY, noiseZ));
+                points.push(point);
+            }
+
+            points.push(end.clone());
+            return points;
+        }
+
+        // --- Trigger Strike Visualization ---
+        let strikeCount = 0;
+
+        function triggerStrike(targetX = null, targetZ = null) {
+            // Generate random strike coordinates if not specified
+            if (targetX === null) targetX = (Math.random() - 0.5) * 24;
+            if (targetZ === null) targetZ = (Math.random() - 0.5) * 24;
+
+            const targetPos = new THREE.Vector3(targetX, 0, targetZ);
+            const startPos = new THREE.Vector3(targetX + (Math.random() - 0.5) * 5, 20, targetZ + (Math.random() - 0.5) * 5);
+
+            // Generate lightning paths (multiple branches)
+            const branchesCount = 3;
+            const lines = [];
+
+            for (let b = 0; b < branchesCount; b++) {
+                const pathPoints = createLightningPath(startPos, targetPos);
+                const curve = new THREE.CatmullRomCurve3(pathPoints);
+                const points = curve.getPoints(50);
+                
+                const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+                const lineMat = new THREE.LineBasicMaterial({
+                    color: 0x00f2fe,
+                    transparent: true,
+                    opacity: 1.0,
+                    linewidth: 2 // Note: linewidth > 1 usually ignored by WebGL implementations
+                });
+                const line = new THREE.Line(lineGeo, lineMat);
+                strikeLayer.add(line);
+                lines.push(line);
+            }
+
+            // Expanding Shockwave Ripple
+            const waveGeo = new THREE.RingGeometry(0.1, 0.2, 64);
+            const waveMat = new THREE.MeshBasicMaterial({
+                color: 0xef4444,
+                transparent: true,
+                opacity: 0.8,
+                side: THREE.DoubleSide
+            });
+            const wave = new THREE.Mesh(waveGeo, waveMat);
+            wave.position.copy(targetPos);
+            wave.rotation.x = -Math.PI / 2;
+            strikeLayer.add(wave);
+
+            // Particle Blast
+            const particleCount = 40;
+            const particlesGeo = new THREE.BufferGeometry();
+            const positions = [];
+            const velocities = [];
+
+            for (let i = 0; i < particleCount; i++) {
+                positions.push(targetX, 0.1, targetZ);
+                const angle = Math.random() * Math.PI * 2;
+                const speed = 2 + Math.random() * 8;
+                const vY = 2 + Math.random() * 10;
+                velocities.push(
+                    Math.cos(angle) * speed,
+                    vY,
+                    Math.sin(angle) * speed
+                );
+            }
+
+            particlesGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            const particlesMat = new THREE.PointsMaterial({
+                color: 0x00f2fe,
+                size: 0.4,
+                transparent: true,
+                opacity: 0.9
+            });
+            const particles = new THREE.Points(particlesGeo, particlesMat);
+            strikeLayer.add(particles);
+
+            // --- Trilateration Intersection Domes ---
+            // Visualizes circles expanding from each station matching calculated distance constraints
+            const domeRings = [];
+            stations.forEach(st => {
+                const stationPos = new THREE.Vector3(st.x, 0, st.z);
+                const dist = stationPos.distanceTo(targetPos);
+
+                const ringGeo = new THREE.RingGeometry(dist - 0.08, dist + 0.08, 64);
+                const ringMat = new THREE.MeshBasicMaterial({
+                    color: st.color,
+                    transparent: true,
+                    opacity: 0.0, // starts invisible
+                    side: THREE.DoubleSide
+                });
+                const ring = new THREE.Mesh(ringGeo, ringMat);
+                ring.position.copy(stationPos);
+                ring.rotation.x = -Math.PI / 2;
+                strikeLayer.add(ring);
+                domeRings.push({ mesh: ring, targetOpacity: 0.6, maxRadius: dist });
+            });
+
+            // Update dashboard counters
+            strikeCount++;
+            document.getElementById('strike-count').textContent = strikeCount;
+
+            // Generate event log details
+            const timestamp = new Date().toLocaleTimeString();
+            const distances = stations.map(st => {
+                const d = new THREE.Vector3(st.x, 0, st.z).distanceTo(targetPos);
+                return `${st.id}: <span class="highlight-cyan">${d.toFixed(2)} km</span>`;
+            }).join(', ');
+
+            const logContainer = document.getElementById('log-container');
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.innerHTML = `
+                <div class="log-time">${timestamp} - STRIKE DETECTED</div>
+                <div>Trilateration intersection calculated from 3 stations:</div>
+                <div class="log-details">
+                    Coords: Lat: <span class="highlight-red">${(40.0 + targetZ*0.01).toFixed(6)}</span>, 
+                    Lon: <span class="highlight-red">${(-75.0 + targetX*0.01).toFixed(6)}</span><br>
+                    Telemetry: ${distances}
+                </div>
+            `;
+            logContainer.insertBefore(logEntry, logContainer.firstChild);
+
+            // Keep log count under 12 entries
+            while (logContainer.children.length > 12) {
+                logContainer.removeChild(logContainer.lastChild);
+            }
+
+            // --- Animation Sequence for Strike ---
+            let animProgress = 0;
+            const strikeDuration = 45; // frames
+
+            function animateStrike() {
+                animProgress++;
+                const fraction = animProgress / strikeDuration;
+
+                // 1. Flash Lightning Bolt
+                if (fraction < 0.2) {
+                    lines.forEach(l => {
+                        l.material.opacity = Math.random() > 0.3 ? 1.0 : 0.2;
+                    });
+                } else if (fraction < 0.5) {
+                    lines.forEach(l => {
+                        l.material.opacity = 1.0 - (fraction - 0.2) / 0.3;
+                    });
+                } else {
+                    lines.forEach(l => {
+                        if (l.parent) strikeLayer.remove(l);
+                    });
+                }
+
+                // 2. Expand Ripple Wave
+                if (fraction < 0.8) {
+                    const waveScale = 1 + fraction * 30;
+                    wave.scale.set(waveScale, waveScale, 1);
+                    wave.material.opacity = 0.8 * (1 - fraction / 0.8);
+                } else {
+                    if (wave.parent) strikeLayer.remove(wave);
+                }
+
+                // 3. Move Particles
+                if (fraction < 1.0) {
+                    const posAttr = particles.geometry.attributes.position;
+                    for (let i = 0; i < particleCount; i++) {
+                        posAttr.setX(i, posAttr.getX(i) + velocities[i*3] * 0.016);
+                        posAttr.setY(i, posAttr.getY(i) + velocities[i*3+1] * 0.016);
+                        posAttr.setZ(i, posAttr.getZ(i) + velocities[i*3+2] * 0.016);
+                        velocities[i*3+1] -= 9.8 * 0.016; // gravity
+                    }
+                    posAttr.needsUpdate = true;
+                    particles.material.opacity = 0.9 * (1 - fraction);
+                } else {
+                    if (particles.parent) strikeLayer.remove(particles);
+                }
+
+                // 4. Fade in and out Trilateration intersections
+                domeRings.forEach(d => {
+                    if (fraction < 0.3) {
+                        d.mesh.material.opacity = d.targetOpacity * (fraction / 0.3);
+                    } else if (fraction < 0.9) {
+                        d.mesh.material.opacity = d.targetOpacity * (1 - (fraction - 0.3) / 0.6);
+                    } else {
+                        if (d.mesh.parent) strikeLayer.remove(d.mesh);
+                    }
+                });
+
+                if (animProgress < strikeDuration) {
+                    requestAnimationFrame(animateStrike);
+                }
+            }
+
+            animateStrike();
+        }
+
+        // --- Controls Event Listeners ---
+        document.getElementById('btn-trigger').addEventListener('click', () => {
+            triggerStrike();
+        });
+
+        // --- Automatic Strike Simulator ---
+        let autoStrikeTimer = 0;
+        
+        function handleAutoStrike() {
+            const speedVal = parseInt(document.getElementById('sim-speed').value);
+            // speed scale: 1 is very slow, 10 is fast
+            const triggerThreshold = (11 - speedVal) * 120; // frames
+
+            autoStrikeTimer++;
+            if (autoStrikeTimer >= triggerThreshold) {
+                autoStrikeTimer = 0;
+                triggerStrike();
+            }
+        }
+
+        // --- Window resize ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- Core Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Slowly rotate scene elements
+            starField.rotation.y += 0.0003;
+            terrainGrid.rotation.z -= 0.0005;
+            ringsGroup.rotation.z += 0.0008;
+
+            // Animate Weather Station pulses
+            stationMeshes.forEach(sm => {
+                sm.pulseVal += 0.05;
+                const scale = 1 + Math.sin(sm.pulseVal) * 0.1;
+                // Pulse the rings scale and opacity
+                sm.mesh.children[0].scale.set(scale, scale, 1);
+                sm.mesh.children[0].material.opacity = 0.5 + Math.sin(sm.pulseVal) * 0.3;
+            });
+
+            // Handle automatic strikes
+            handleAutoStrike();
+
+            renderer.render(scene, camera);
+        }
+
+        // Trigger first strike on startup
+        setTimeout(() => triggerStrike(3, 4), 1000);
+
+        animate();
+    </script>
+</body>
+</html>

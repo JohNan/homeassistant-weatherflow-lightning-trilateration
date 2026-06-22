@@ -94,4 +94,4 @@ class WeatherFlowLightningStrikeEntity(GeolocationEvent):
         def _remove(now):
             self.hass.async_create_task(self.async_remove())
 
-        async_call_later(self.hass, 900, _remove)
+        async_call_later(self.hass, 21600, _remove)
