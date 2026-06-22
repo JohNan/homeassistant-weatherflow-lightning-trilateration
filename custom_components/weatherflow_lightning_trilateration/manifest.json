@@ -6,5 +6,8 @@
   ],
   "iot_class": "cloud_push",
   "version": "1.0.0",
-  "codeowners": []
+  "codeowners": [
+    "@JohNan"
+  ],
+  "documentation": "https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration"
 }

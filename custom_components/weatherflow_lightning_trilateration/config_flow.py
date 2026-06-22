@@ -1,6 +1,8 @@
 """Config flow for WeatherFlow Lightning Trilateration integration."""
 import voluptuous as vol
+
 from homeassistant import config_entries
+from homeassistant.helpers import device_registry as dr
 
 from .const import CONF_NEIGHBOR_STATIONS, CONF_PRIMARY_STATION, DOMAIN
 
@@ -28,7 +30,9 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if detected_station:
             default_primary = detected_station
         else:
-            default_primary = f"{self.hass.config.latitude},{self.hass.config.longitude}"
+            default_primary = (
+                f"{self.hass.config.latitude},{self.hass.config.longitude}"
+            )
 
         data_schema = vol.Schema(
             {
@@ -62,14 +66,16 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # 2. Query Device Registry
         try:
-            from homeassistant.helpers import device_registry as dr
             device_registry = dr.async_get(self.hass)
             for device_entry in device_registry.devices.values():
                 for entry_id in device_entry.config_entries:
                     entry = self.hass.config_entries.async_get_entry(entry_id)
                     if entry and entry.domain in target_domains:
                         for identifier in device_entry.identifiers:
-                            if len(identifier) == 2 and identifier[0] == entry.domain:
+                            if (
+                                len(identifier) == 2
+                                and identifier[0] == entry.domain
+                            ):
                                 val = str(identifier[1])
                                 if val.isdigit():
                                     return val

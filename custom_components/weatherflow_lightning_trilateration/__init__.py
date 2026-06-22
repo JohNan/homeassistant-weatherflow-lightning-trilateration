@@ -3,9 +3,12 @@ import asyncio
 import json
 import logging
 import math
+
 import websockets
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 
 from .const import (
     CONF_NEIGHBOR_STATIONS,
@@ -97,7 +100,6 @@ class TempestStrikeCoordinator:
 
         # 2. Query Device Registry
         try:
-            from homeassistant.helpers import device_registry as dr
             device_registry = dr.async_get(self.hass)
             for device_entry in device_registry.devices.values():
                 for entry_id in device_entry.config_entries:

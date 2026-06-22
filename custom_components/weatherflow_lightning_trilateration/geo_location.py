@@ -1,6 +1,7 @@
 """Geolocation platform for WeatherFlow Lightning Trilateration integration."""
 import logging
 import time
+
 from homeassistant.components.geo_location import GeolocationEvent
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -35,12 +36,12 @@ def _handle_strike_event(event) -> None:
     latitude = event.data.get("latitude")
     longitude = event.data.get("longitude")
     if latitude is not None and longitude is not None:
-        entity = TempestLightningStrikeEntity(latitude, longitude)
+        entity = WeatherFlowLightningStrikeEntity(latitude, longitude)
         for async_add_entities in _ADD_ENTITIES_CALLBACKS:
             async_add_entities([entity])
 
 
-class TempestLightningStrikeEntity(GeolocationEvent):
+class WeatherFlowLightningStrikeEntity(GeolocationEvent):
     """Representation of a lightning strike geolocation event."""
 
     _attr_name = "Lightning Strike"
