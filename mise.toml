@@ -1,0 +1,16 @@
+# mise configuration file for WeatherFlow Lightning Trilateration
+
+[tools]
+python = "3.12"
+
+[tasks.lint]
+description = "Check Python syntax compilation"
+run = "python3 -m py_compile custom_components/weatherflow_lightning_trilateration/*.py"
+
+[tasks.validate-json]
+description = "Validate structure and syntax of manifest, translation, and HACS configurations"
+run = "python3 -c \"import json; [json.load(open(f)) for f in ('custom_components/weatherflow_lightning_trilateration/manifest.json', 'custom_components/weatherflow_lightning_trilateration/translations/en.json', 'hacs.json')]\""
+
+[tasks.all]
+description = "Run all validation checks"
+depends = ["lint", "validate-json"]
