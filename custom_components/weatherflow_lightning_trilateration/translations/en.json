@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "WeatherFlow Lightning Trilateration",
-        "description": "Configure the weather stations for WeatherFlow Lightning strike trilateration.",
+        "description": "Configure Tempest stations for lightning trilateration.\n\nAPI Token: Log in to tempestwx.com, go to Settings > Data Authorizations, and generate a token.\nPrimary Station: Enter your station ID or coordinates as lat,lon.\nNeighboring Stations: Enter a comma-separated list of nearby station IDs (at least 2 are required to calculate strikes).",
         "data": {
           "primary_station": "Primary Station (ID or coordinates as lat,lon)",
           "neighbor_stations": "Neighboring Stations (comma-separated IDs)",
