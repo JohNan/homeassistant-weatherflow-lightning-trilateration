@@ -6,7 +6,8 @@
         "description": "Configure the weather stations for WeatherFlow Lightning strike trilateration.",
         "data": {
           "primary_station": "Primary Station (ID or coordinates as lat,lon)",
-          "neighbor_stations": "Neighboring Stations (comma-separated IDs)"
+          "neighbor_stations": "Neighboring Stations (comma-separated IDs)",
+          "api_token": "API Token (Personal Access Token)"
         }
       }
     },

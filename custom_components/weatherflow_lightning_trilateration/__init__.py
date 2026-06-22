@@ -15,6 +15,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
+    CONF_API_TOKEN,
     CONF_NEIGHBOR_STATIONS,
     CONF_PRIMARY_STATION,
     DOMAIN,
@@ -106,6 +107,7 @@ class TempestStrikeCoordinator:
         self.neighbor_stations = [
             s.strip() for s in neighbor_raw.split(",") if s.strip()
         ]
+        self.api_token = str(entry.data.get(CONF_API_TOKEN, "")).strip()
         self.all_stations = [self.primary_station] + self.neighbor_stations
 
         self._listener_task = None
@@ -187,8 +189,15 @@ class TempestStrikeCoordinator:
         retry_delay = 5
         while self._running:
             try:
-                _LOGGER.info("Connecting to Tempest WebSocket: %s", WS_ENDPOINT)
-                async with websockets.connect(WS_ENDPOINT) as websocket:
+                ws_url = WS_ENDPOINT
+                if self.api_token:
+                    ws_url = f"{WS_ENDPOINT}?token={self.api_token}"
+
+                _LOGGER.info(
+                    "Connecting to Tempest WebSocket: %s",
+                    ws_url.replace(self.api_token, "***") if self.api_token else ws_url,
+                )
+                async with websockets.connect(ws_url) as websocket:
                     retry_delay = 5
                     for station_id in self.all_stations:
                         # Skip subscription if it's a coordinate string or not numeric
