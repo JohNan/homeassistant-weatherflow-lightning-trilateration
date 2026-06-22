@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import random
 
 import voluptuous as vol
@@ -62,6 +63,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 }
             ),
         )
+
+    # Register static path for the custom Lovelace card
+    dist_dir = os.path.join(os.path.dirname(__file__), "dist")
+    hass.http.register_static_path(
+        "/weatherflow_lightning_trilateration",
+        dist_dir,
+        cache_headers=False,
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, ["geo_location"])
     return True

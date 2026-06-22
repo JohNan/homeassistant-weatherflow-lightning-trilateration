@@ -278,7 +278,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       if (frac < 0.2) {
         lines.forEach(l => l.material.opacity = Math.random() > 0.3 ? 1.0 : 0.2);
       } else if (frac < 0.5) {
-        lines.forEach(l => l.material.opacity = 1.0 - (frac - 0.2) / 0.3);
+        lines.forEach(l => l.material.opacity = 1.0 - (frac - 0.2) / 0.3; });
       } else {
         lines.forEach(l => { if (l.parent) this.strikeLayer.remove(l); });
       }
