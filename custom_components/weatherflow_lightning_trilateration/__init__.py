@@ -276,6 +276,68 @@ class TempestStrikeCoordinator:
 
     async def _async_resolve_stations_metadata(self) -> None:
         """Resolve device IDs and coordinates for all configured and discovered stations."""
+        session = async_get_clientsession(self.hass)
+
+        # 1. If we have a token, fetch the user's own stations and devices list first.
+        # This allows us to map device IDs/serial numbers (like 00172794) to their correct station IDs.
+        if self.api_token:
+            user_stations_url = "https://swd.weatherflow.com/swd/rest/stations"
+            params = {"token": self.api_token}
+            try:
+                async with session.get(
+                    user_stations_url, params=params, timeout=10
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        stations = data.get("stations", [])
+                        for station in stations:
+                            station_id = str(station.get("station_id", ""))
+                            lat = station.get("latitude")
+                            lon = station.get("longitude")
+                            if lat is not None and lon is not None:
+                                self.station_coords[station_id] = (
+                                    float(lat),
+                                    float(lon),
+                                )
+
+                            devices = station.get("devices", [])
+                            for device in devices:
+                                dev_id = str(device.get("device_id", ""))
+                                serial = str(device.get("serial_number", ""))
+                                if dev_id and dev_id.isdigit():
+                                    self.device_to_station[dev_id] = station_id
+                                    if lat is not None and lon is not None:
+                                        self.station_coords[dev_id] = (
+                                            float(lat),
+                                            float(lon),
+                                        )
+                                    if serial:
+                                        self.device_to_station[serial] = station_id
+                                        self.station_coords[serial] = (
+                                            float(lat),
+                                            float(lon),
+                                        )
+                    else:
+                        _LOGGER.debug(
+                            "Failed to fetch user stations list: HTTP %d",
+                            response.status,
+                        )
+            except Exception as e:
+                _LOGGER.debug("Error fetching user stations list: %s", e)
+
+        # 2. Update any configured device ID or serial number in self.all_stations to the resolved station ID
+        for idx, s_id in enumerate(self.all_stations):
+            if s_id in self.device_to_station:
+                resolved_station = self.device_to_station[s_id]
+                _LOGGER.info(
+                    "Resolved configured ID %s to station %s",
+                    s_id,
+                    resolved_station,
+                )
+                self.all_stations[idx] = resolved_station
+
+        # 3. For any remaining station ID, query the public/metadata stations endpoint if not already resolved.
+        # If the API token is missing, we skip and use the fallback.
         if not self.api_token:
             # Fallback mapping: assume device_id is station_id
             for station in self.all_stations:
@@ -283,10 +345,14 @@ class TempestStrikeCoordinator:
                     self.device_to_station[station] = station
             return
 
-        session = async_get_clientsession(self.hass)
-
         for station_id in list(self.all_stations):
             if "," in station_id or not station_id.strip().isdigit():
+                continue
+
+            # If we already have the coordinates and devices resolved for this station, skip querying
+            if station_id in self.station_coords and any(
+                sid == station_id for sid in self.device_to_station.values()
+            ):
                 continue
 
             url = f"https://swd.weatherflow.com/swd/rest/stations/{station_id}"
@@ -318,17 +384,26 @@ class TempestStrikeCoordinator:
                                         station_id,
                                     )
                     else:
-                        _LOGGER.warning(
-                            "Failed to resolve metadata for station %s: HTTP %d",
+                        # Log 404 as info since it could be an unresolved device ID or serial number
+                        log_level = (
+                            logging.INFO
+                            if response.status == 404
+                            else logging.WARNING
+                        )
+                        _LOGGER.log(
+                            log_level,
+                            "Could not resolve metadata for ID/station %s: HTTP %d",
                             station_id,
                             response.status,
                         )
             except Exception as e:
                 _LOGGER.error(
-                    "Error resolving metadata for station %s: %s", station_id, e
+                    "Error resolving metadata for station %s: %s",
+                    station_id,
+                    e,
                 )
 
-        # Fallback mapping for any station that failed to resolve or has no mapped devices
+        # 4. Fallback mapping for any station that failed to resolve or has no mapped devices
         for station in self.all_stations:
             if "," not in station and station.strip().isdigit():
                 if station not in self.device_to_station.values():
