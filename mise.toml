@@ -11,6 +11,10 @@ run = "python3 -m py_compile custom_components/weatherflow_lightning_trilaterati
 description = "Validate structure and syntax of manifest, translation, and HACS configurations"
 run = "python3 -c \"import json; [json.load(open(f)) for f in ('custom_components/weatherflow_lightning_trilateration/manifest.json', 'custom_components/weatherflow_lightning_trilateration/translations/en.json', 'hacs.json')]\""
 
+[tasks.validate-js]
+description = "Validate JavaScript card syntax"
+run = "node --check custom_components/weatherflow_lightning_trilateration/dist/weatherflow-lightning-card.js"
+
 [tasks.all]
 description = "Run all validation checks"
-depends = ["lint", "validate-json"]
+depends = ["lint", "validate-json", "validate-js"]
