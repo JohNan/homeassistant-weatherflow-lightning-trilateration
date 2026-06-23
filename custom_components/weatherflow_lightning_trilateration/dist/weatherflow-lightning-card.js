@@ -23,6 +23,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.elevationGrid = [];
     this.glowTexture = null;
     this.heatGeo = null;
+    this.lastRefLat = null;
+    this.lastRefLon = null;
   }
 
   static getConfigElement() {
@@ -479,6 +481,81 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     this.updateStationHeights();
     this.updateRangeRings();
+  }
+
+  loadMapTexture(refLat, refLon) {
+    const zoom = 10;
+    const spanKm = 50.0;
+    
+    const latSpan = spanKm / 111.1;
+    const cosLat = Math.cos(refLat * Math.PI / 180.0);
+    const lonSpan = cosLat > 0 ? spanKm / (111.1 * cosLat) : spanKm / 111.1;
+    
+    const minLat = refLat - latSpan / 2;
+    const maxLat = refLat + latSpan / 2;
+    const minLon = refLon - lonSpan / 2;
+    const maxLon = refLon + lonSpan / 2;
+    
+    const lon2tile = (lon, z) => (lon + 180) / 360 * Math.pow(2, z);
+    const lat2tile = (lat, z) => (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z);
+    const tile2lon = (x, z) => x / Math.pow(2, z) * 360 - 180;
+    const tile2lat = (y, z) => Math.atan(Math.sinh(Math.PI - 2 * Math.PI * y / Math.pow(2, z))) * 180 / Math.PI;
+    
+    const x0 = Math.floor(lon2tile(minLon, zoom));
+    const x1 = Math.floor(lon2tile(maxLon, zoom));
+    const y0 = Math.floor(lat2tile(maxLat, zoom));
+    const y1 = Math.floor(lat2tile(minLat, zoom));
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 1024;
+    const ctx = canvas.getContext('2d');
+    
+    ctx.fillStyle = '#050b14';
+    ctx.fillRect(0, 0, 1024, 1024);
+    
+    const promises = [];
+    
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        const tileMinLon = tile2lon(x, zoom);
+        const tileMaxLon = tile2lon(x + 1, zoom);
+        const tileMinLat = tile2lat(y + 1, zoom);
+        const tileMaxLat = tile2lat(y, zoom);
+        
+        const leftPct = (tileMinLon - minLon) / (maxLon - minLon);
+        const rightPct = (tileMaxLon - minLon) / (maxLon - minLon);
+        const bottomPct = (tileMinLat - minLat) / (maxLat - minLat);
+        const topPct = (tileMaxLat - minLat) / (maxLat - minLat);
+        
+        const dx = leftPct * 1024;
+        const dy = (1.0 - topPct) * 1024;
+        const dw = (rightPct - leftPct) * 1024;
+        const dh = (topPct - bottomPct) * 1024;
+        
+        const tileUrl = `https://basemaps.cartocdn.com/dark_all/${zoom}/${x}/${y}.png`;
+        
+        const p = new Promise((resolve) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => {
+            ctx.drawImage(img, dx, dy, dw, dh);
+            resolve();
+          };
+          img.onerror = () => resolve();
+          img.src = tileUrl;
+        });
+        promises.push(p);
+      }
+    }
+    
+    Promise.all(promises).then(() => {
+      const texture = new THREE.CanvasTexture(canvas);
+      if (this.terrainMesh && this.terrainMesh.material) {
+        this.terrainMesh.material.map = texture;
+        this.terrainMesh.material.needsUpdate = true;
+      }
+    });
   }
 
   updateTerrainGeometry(elevationGrid) {
@@ -1183,6 +1260,15 @@ class WeatherFlowLightningCard extends HTMLElement {
     this._hass = hass;
     if (!hass || !this.initialized) return;
 
+    // Load/Cache CartoDB Dark Matter map texture
+    const refLat = hass.config.latitude;
+    const refLon = hass.config.longitude;
+    if (this.lastRefLat !== refLat || this.lastRefLon !== refLon) {
+      this.lastRefLat = refLat;
+      this.lastRefLon = refLon;
+      this.loadMapTexture(refLat, refLon);
+    }
+
     // Find the station sensor
     const stationsSensorId = Object.keys(hass.states).find(
       key => key.startsWith('sensor.') && key.endsWith('_stations') &&
@@ -1217,8 +1303,6 @@ class WeatherFlowLightningCard extends HTMLElement {
         }
 
         if (stationsChanged) {
-          const refLat = hass.config.latitude;
-          const refLon = hass.config.longitude;
           const R = 6371.0;
           const cosLat = Math.cos(refLat * Math.PI / 180.0);
 
@@ -1260,8 +1344,6 @@ class WeatherFlowLightningCard extends HTMLElement {
       key => key.startsWith('geo_location.') && hass.states[key].attributes.source === sourceNamespace
     );
 
-    const refLat = hass.config.latitude;
-    const refLon = hass.config.longitude;
     const R = 6371.0;
     const cosLat = Math.cos(refLat * Math.PI / 180.0);
 
