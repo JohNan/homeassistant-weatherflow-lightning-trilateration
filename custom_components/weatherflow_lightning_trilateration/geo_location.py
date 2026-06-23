@@ -51,9 +51,6 @@ class WeatherFlowLightningStrikeEntity(GeolocationEvent):
         """Initialize the entity."""
         self._attr_latitude = latitude
         self._attr_longitude = longitude
-        self._attr_unique_id = (
-            f"weatherflow_strike_{latitude}_{longitude}_{time.time()}"
-        )
 
     @property
     def latitude(self) -> float:
@@ -79,11 +76,6 @@ class WeatherFlowLightningStrikeEntity(GeolocationEvent):
     def name(self) -> str:
         """Return the name."""
         return self._attr_name
-
-    @property
-    def unique_id(self) -> str:
-        """Return unique ID."""
-        return self._attr_unique_id
 
     async def async_added_to_hass(self) -> None:
         """Call when entity is added to hass."""
