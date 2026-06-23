@@ -39,8 +39,6 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not primary:
                 errors[CONF_PRIMARY_STATION] = "empty_primary"
-            elif not detected_station:
-                errors["base"] = "no_local_station"
 
             if not errors:
                 return self.async_create_entry(
