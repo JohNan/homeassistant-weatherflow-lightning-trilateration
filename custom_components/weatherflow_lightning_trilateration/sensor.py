@@ -1,0 +1,71 @@
+"""Sensor platform for WeatherFlow Lightning Trilateration."""
+
+import logging
+
+from homeassistant.components.sensor import SensorEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up the sensor platform."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    async_add_entities([WeatherFlowTrilaterationSensor(coordinator, entry)])
+
+
+class WeatherFlowTrilaterationSensor(SensorEntity):
+    """Representation of a WeatherFlow Lightning Trilateration Sensor."""
+
+    def __init__(self, coordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self._coordinator = coordinator
+        self._entry = entry
+        self._attr_name = "WeatherFlow Lightning Trilateration Stations"
+        self._attr_unique_id = f"{entry.entry_id}_stations"
+        self._attr_icon = "mdi:lightning-bolt"
+
+    @property
+    def state(self) -> int:
+        """Return the state of the sensor (count of configured/discovered stations)."""
+        return len(self._coordinator.all_stations)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return entity specific state attributes."""
+        stations_data = []
+        for station_id in self._coordinator.all_stations:
+            coords = self._coordinator.station_coords.get(station_id)
+            if not coords:
+                coords = self._coordinator._get_station_coords(station_id)
+
+            if coords:
+                lat, lon = coords
+                # Determine type
+                station_type = "discovered"
+                if station_id == self._coordinator.primary_station:
+                    station_type = "primary"
+                elif station_id in self._coordinator.neighbor_stations:
+                    station_type = "neighbor"
+
+                stations_data.append(
+                    {
+                        "id": station_id,
+                        "latitude": lat,
+                        "longitude": lon,
+                        "type": station_type,
+                    }
+                )
+
+        return {"stations": stations_data}
+
+    async def async_update(self) -> None:
+        """Update the sensor."""
+        # The coordinator updates its internal lists, this method triggers a state refresh
+        pass

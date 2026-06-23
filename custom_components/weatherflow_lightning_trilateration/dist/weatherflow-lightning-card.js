@@ -329,6 +329,71 @@ class WeatherFlowLightningCard extends HTMLElement {
     this._hass = hass;
     if (!hass || !this.initialized) return;
 
+    // Find the station sensor
+    const stationsSensorId = Object.keys(hass.states).find(
+      key => key.startsWith('sensor.') && key.endsWith('_stations') &&
+             hass.states[key].attributes.stations !== undefined &&
+             hass.states[key].attributes.icon === "mdi:lightning-bolt" // or another way to distinguish
+    ) || Object.keys(hass.states).find(key => key.startsWith('sensor.') && hass.states[key].attributes.stations !== undefined);
+
+    if (stationsSensorId) {
+      const stationsAttr = hass.states[stationsSensorId].attributes.stations;
+
+      if (Array.isArray(stationsAttr)) {
+        let stationsChanged = false;
+
+        // We need to compare existing stations to new ones
+        if (this.stations.length !== stationsAttr.length) {
+          stationsChanged = true;
+        } else {
+          // Check if any station changed
+          for (let i = 0; i < stationsAttr.length; i++) {
+            const oldSt = this.stations.find(s => s.id === stationsAttr[i].id);
+            if (!oldSt) {
+              stationsChanged = true;
+              break;
+            }
+          }
+        }
+
+        if (stationsChanged) {
+          const refLat = hass.config.latitude;
+          const refLon = hass.config.longitude;
+          const R = 6371.0;
+          const cosLat = Math.cos(refLat * Math.PI / 180.0);
+
+          this.stations = stationsAttr.map(st => {
+            const lat = parseFloat(st.latitude);
+            const lon = parseFloat(st.longitude);
+
+            const gridX = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
+            const gridZ = R * (lat - refLat) * (Math.PI / 180.0);
+
+            let color = 0x38bdf8; // default / discovered
+            if (st.type === "primary") color = 0x00f2fe;
+            else if (st.type === "neighbor") color = 0x38bdf8;
+
+            return {
+              id: st.id,
+              x: gridX,
+              z: gridZ,
+              color: color
+            };
+          });
+
+          // Remove old meshes
+          if (this.stationMeshes) {
+            this.stationMeshes.forEach(sm => {
+              this.scene.remove(sm.mesh);
+            });
+          }
+
+          // Re-add meshes
+          this.addWeatherStations();
+        }
+      }
+    }
+
     // Detect new lightning strike entities from the trilateration integration
     const sourceNamespace = 'weatherflow_lightning_trilateration';
     const strikes = Object.keys(hass.states).filter(
