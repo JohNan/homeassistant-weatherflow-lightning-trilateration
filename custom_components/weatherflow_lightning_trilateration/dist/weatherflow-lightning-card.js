@@ -11,6 +11,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     ];
     this.domeRings = [];
     this.strikeLayer = null;
+    this.strikeHistory = [];
+    this.isPlaying = false;
+    this.playbackMode = 'live';
+    this.playbackTime = Date.now();
+    this.playbackSpeed = 120; // 120x speed playback
+    this.lastTickTime = Date.now();
+    this.lastPlayTickTime = Date.now();
   }
 
   static getConfigElement() {
@@ -48,16 +55,27 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (this.initialized) return;
     this.initialized = true;
 
+    // Create wrapper
+    this.wrapper = document.createElement('div');
+    this.wrapper.style.position = 'relative';
+    this.wrapper.style.width = '100%';
+    this.wrapper.style.display = 'flex';
+    this.wrapper.style.flexDirection = 'column';
+    this.wrapper.style.backgroundColor = '#02040a';
+    this.wrapper.style.borderRadius = '12px';
+    this.wrapper.style.overflow = 'hidden';
+    this.wrapper.style.border = '1px solid rgba(56, 189, 248, 0.15)';
+    this.shadowRoot.appendChild(this.wrapper);
+
     // Create container
     this.container = document.createElement('div');
     this.container.style.position = 'relative';
     this.container.style.width = '100%';
     this.container.style.height = this.config.height || '350px';
-    this.container.style.backgroundColor = '#02040a';
-    this.container.style.borderRadius = '12px';
     this.container.style.overflow = 'hidden';
-    this.container.style.border = '1px solid rgba(56, 189, 248, 0.15)';
-    this.shadowRoot.appendChild(this.container);
+    this.wrapper.appendChild(this.container);
+
+    this.createPlaybackControls();
 
     // Three.js setup
     this.scene = new THREE.Scene();
@@ -190,6 +208,8 @@ class WeatherFlowLightningCard extends HTMLElement {
   animate() {
     requestAnimationFrame(() => this.animate());
 
+    this.tickPlayback();
+
     if (this.starField) this.starField.rotation.y += 0.0001;
     if (this.terrainGrid) this.terrainGrid.rotation.z -= 0.0002;
 
@@ -205,6 +225,260 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (this.renderer && this.scene && this.camera) {
       this.renderer.render(this.scene, this.camera);
     }
+  }
+
+  createPlaybackControls() {
+    const style = document.createElement('style');
+    style.textContent = `
+      .timeline-slider {
+        -webkit-appearance: none;
+        appearance: none;
+        flex: 1;
+        height: 6px;
+        border-radius: 3px;
+        background: #1e293b;
+        outline: none;
+        cursor: pointer;
+        transition: background 0.15s ease;
+      }
+      .timeline-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #38bdf8;
+        cursor: pointer;
+        box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+        transition: transform 0.1s ease;
+      }
+      .timeline-slider::-webkit-slider-thumb:hover {
+        transform: scale(1.2);
+      }
+      .timeline-slider::-moz-range-thumb {
+        width: 14px;
+        height: 14px;
+        border: none;
+        border-radius: 50%;
+        background: #38bdf8;
+        cursor: pointer;
+        box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+        transition: transform 0.1s ease;
+      }
+      .timeline-slider::-moz-range-thumb:hover {
+        transform: scale(1.2);
+      }
+      .play-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: #38bdf8;
+        padding: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        outline: none;
+        transition: transform 0.15s ease;
+      }
+      .play-btn:hover {
+        transform: scale(1.2);
+      }
+    `;
+    this.shadowRoot.appendChild(style);
+
+    this.controls = document.createElement('div');
+    this.controls.style.display = 'flex';
+    this.controls.style.alignItems = 'center';
+    this.controls.style.padding = '8px 12px';
+    this.controls.style.backgroundColor = '#080c14';
+    this.controls.style.borderTop = '1px solid rgba(56, 189, 248, 0.1)';
+    this.controls.style.gap = '12px';
+    this.controls.style.fontFamily = 'var(--paper-font-body1_-_font-family, inherit)';
+    this.controls.style.color = '#e2e8f0';
+    this.wrapper.appendChild(this.controls);
+
+    this.playBtn = document.createElement('button');
+    this.playBtn.className = 'play-btn';
+    this.playBtn.innerHTML = this.getPlayIcon();
+    this.controls.appendChild(this.playBtn);
+
+    this.slider = document.createElement('input');
+    this.slider.type = 'range';
+    this.slider.className = 'timeline-slider';
+    this.slider.min = '0';
+    this.slider.max = '1000';
+    this.slider.value = '1000';
+    this.controls.appendChild(this.slider);
+
+    this.timeLabel = document.createElement('span');
+    this.timeLabel.style.fontSize = '12px';
+    this.timeLabel.style.minWidth = '130px';
+    this.timeLabel.style.textAlign = 'right';
+    this.timeLabel.style.color = '#94a3b8';
+    this.timeLabel.style.fontVariantNumeric = 'tabular-nums';
+    this.timeLabel.innerText = 'Live';
+    this.controls.appendChild(this.timeLabel);
+
+    this.playBtn.addEventListener('click', () => this.togglePlay());
+    this.slider.addEventListener('input', (e) => this.handleSliderInput(e));
+    this.slider.addEventListener('change', () => this.handleSliderChange());
+  }
+
+  getPlayIcon() {
+    return `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor"><path d="M320-203v-554l440 277-440 277Z"/></svg>`;
+  }
+
+  getPauseIcon() {
+    return `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor"><path d="M560-200v-560h160v560H560Zm-320 0v-560h160v560H240Z"/></svg>`;
+  }
+
+  tickPlayback() {
+    if (this.strikeHistory.length === 0) {
+      if (this.slider) this.slider.disabled = true;
+      if (this.timeLabel) this.timeLabel.innerText = 'No strikes';
+      return;
+    }
+
+    if (this.slider) this.slider.disabled = false;
+
+    const minTime = this.strikeHistory[0].time;
+    const maxTime = Date.now();
+
+    if (this.playbackMode === 'live') {
+      this.playbackTime = maxTime;
+      if (this.slider) {
+        this.slider.min = minTime;
+        this.slider.max = maxTime;
+        this.slider.value = maxTime;
+      }
+      if (this.timeLabel) this.timeLabel.innerText = 'Live';
+    } else {
+      if (this.isPlaying) {
+        const now = Date.now();
+        const dt = now - (this.lastPlayTickTime || now);
+        this.lastPlayTickTime = now;
+
+        this.playbackTime += dt * this.playbackSpeed;
+
+        if (this.playbackTime >= maxTime) {
+          this.playbackTime = maxTime;
+          this.setLiveMode();
+        } else {
+          if (this.slider) {
+            this.slider.min = minTime;
+            this.slider.max = maxTime;
+            this.slider.value = this.playbackTime;
+          }
+          this.updateTimeLabel();
+          this.checkAndTriggerPlaybackStrikes();
+        }
+      } else {
+        if (this.slider) {
+          this.slider.min = minTime;
+          this.slider.max = maxTime;
+        }
+        this.updateTimeLabel();
+      }
+    }
+  }
+
+  togglePlay() {
+    if (this.playbackMode === 'live') {
+      this.playbackMode = 'playback';
+      this.isPlaying = true;
+      this.lastPlayTickTime = Date.now();
+      if (this.strikeHistory.length > 0) {
+        const thirtySecsAgo = Date.now() - 30000;
+        this.playbackTime = Math.max(this.strikeHistory[0].time, thirtySecsAgo);
+        this.strikeHistory.forEach(s => {
+          s.animated = (s.time <= this.playbackTime);
+        });
+      } else {
+        this.playbackTime = Date.now();
+      }
+    } else {
+      this.isPlaying = !this.isPlaying;
+      if (this.isPlaying) {
+        this.lastPlayTickTime = Date.now();
+      }
+    }
+    this.updatePlayBtnIcon();
+  }
+
+  setLiveMode() {
+    this.playbackMode = 'live';
+    this.isPlaying = false;
+    this.updatePlayBtnIcon();
+    if (this.slider) {
+      this.slider.value = Date.now();
+    }
+    if (this.timeLabel) {
+      this.timeLabel.innerText = 'Live';
+    }
+    this.strikeHistory.forEach(s => s.animated = true);
+  }
+
+  updatePlayBtnIcon() {
+    if (this.isPlaying) {
+      this.playBtn.innerHTML = this.getPauseIcon();
+      this.playBtn.style.color = '#ef4444';
+    } else {
+      this.playBtn.innerHTML = this.getPlayIcon();
+      this.playBtn.style.color = '#38bdf8';
+    }
+  }
+
+  updateTimeLabel() {
+    if (this.strikeHistory.length === 0) return;
+    const date = new Date(this.playbackTime);
+    const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    const diffSecs = Math.round((Date.now() - this.playbackTime) / 1000);
+    let relStr = '';
+    if (diffSecs < 60) {
+      relStr = `-${diffSecs}s`;
+    } else {
+      const mins = Math.floor(diffSecs / 60);
+      const secs = diffSecs % 60;
+      relStr = `-${mins}m ${secs}s`;
+    }
+
+    if (this.timeLabel) {
+      this.timeLabel.innerText = `${timeStr} (${relStr})`;
+    }
+  }
+
+  handleSliderInput(e) {
+    this.playbackMode = 'playback';
+    this.isPlaying = false;
+    this.playbackTime = parseFloat(e.target.value);
+    this.updatePlayBtnIcon();
+    this.updateTimeLabel();
+
+    this.strikeHistory.forEach(strike => {
+      if (strike.time <= this.playbackTime) {
+        strike.animated = true;
+      } else {
+        strike.animated = false;
+      }
+    });
+  }
+
+  handleSliderChange() {
+    // Left empty for potential future hooks on slider release
+  }
+
+  checkAndTriggerPlaybackStrikes() {
+    this.strikeHistory.forEach(strike => {
+      if (strike.time <= this.playbackTime) {
+        if (!strike.animated) {
+          strike.animated = true;
+          this.triggerStrikeAnimation(strike.x, strike.z);
+        }
+      } else {
+        strike.animated = false;
+      }
+    });
   }
 
   createLightningPath(start, end, segments = 10) {
@@ -394,37 +668,66 @@ class WeatherFlowLightningCard extends HTMLElement {
       }
     }
 
-    // Detect new lightning strike entities from the trilateration integration
+    // Detect lightning strike entities from the trilateration integration
     const sourceNamespace = 'weatherflow_lightning_trilateration';
     const strikes = Object.keys(hass.states).filter(
       key => key.startsWith('geo_location.') && hass.states[key].attributes.source === sourceNamespace
     );
 
+    const refLat = hass.config.latitude;
+    const refLon = hass.config.longitude;
+    const R = 6371.0;
+    const cosLat = Math.cos(refLat * Math.PI / 180.0);
+
+    const activeStrikes = [];
     strikes.forEach(entityId => {
-      if (!this.knownStrikes.has(entityId)) {
-        this.knownStrikes.add(entityId);
-        
-        // Extract coordinate attributes
-        const stateObj = hass.states[entityId];
-        const lat = parseFloat(stateObj.attributes.latitude);
-        const lon = parseFloat(stateObj.attributes.longitude);
+      const stateObj = hass.states[entityId];
+      const lat = parseFloat(stateObj.attributes.latitude);
+      const lon = parseFloat(stateObj.attributes.longitude);
 
-        if (!isNaN(lat) && !isNaN(lon)) {
-          // Resolve relative grid coordinates based on HA configured location
-          const refLat = hass.config.latitude;
-          const refLon = hass.config.longitude;
-          const R = 6371.0;
-          const cosLat = Math.cos(refLat * Math.PI / 180.0);
-          
-          // Map distance differences to grid space (in km)
-          const gridX = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-          const gridZ = R * (lat - refLat) * (Math.PI / 180.0);
+      if (!isNaN(lat) && !isNaN(lon)) {
+        const gridX = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
+        const gridZ = R * (lat - refLat) * (Math.PI / 180.0);
+        const time = new Date(stateObj.last_changed).getTime();
+        activeStrikes.push({
+          id: entityId,
+          time: time,
+          x: gridX,
+          z: gridZ
+        });
+      }
+    });
 
-          // Trigger WebGL animation!
-          this.triggerStrikeAnimation(gridX, gridZ);
+    // Sort strikes by time ascending
+    activeStrikes.sort((a, b) => a.time - b.time);
+
+    // Sync activeStrikes with this.strikeHistory
+    activeStrikes.forEach(strike => {
+      if (!this.strikeHistory.some(s => s.id === strike.id)) {
+        const isNewToCard = !this.knownStrikes.has(strike.id);
+        if (isNewToCard) {
+          this.knownStrikes.add(strike.id);
+        }
+
+        const shouldAnimateNow = this.playbackMode === 'live' && isNewToCard;
+
+        this.strikeHistory.push({
+          id: strike.id,
+          time: strike.time,
+          x: strike.x,
+          z: strike.z,
+          animated: shouldAnimateNow || (this.playbackMode !== 'live' && strike.time <= this.playbackTime)
+        });
+
+        if (shouldAnimateNow) {
+          this.triggerStrikeAnimation(strike.x, strike.z);
         }
       }
     });
+
+    // Evict items from strikeHistory that are no longer in activeStrikes
+    this.strikeHistory = this.strikeHistory.filter(s => activeStrikes.some(as => as.id === s.id));
+    this.strikeHistory.sort((a, b) => a.time - b.time);
 
     // Cleanup old/removed entities from tracked set
     for (const id of this.knownStrikes) {
