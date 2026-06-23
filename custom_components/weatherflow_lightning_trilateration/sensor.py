@@ -4,7 +4,7 @@ import logging
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -16,8 +16,11 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up the sensor platform."""
+    _LOGGER.debug("Setting up WeatherFlow Lightning Trilateration sensor platform for entry: %s", entry.entry_id)
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([WeatherFlowTrilaterationSensor(coordinator, entry)])
+    sensor = WeatherFlowTrilaterationSensor(coordinator, entry)
+    async_add_entities([sensor])
+    _LOGGER.debug("Dispatched WeatherFlowTrilaterationSensor registration")
 
 
 class WeatherFlowTrilaterationSensor(SensorEntity):
@@ -30,11 +33,14 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
         self._attr_name = "WeatherFlow Lightning Trilateration Stations"
         self._attr_unique_id = f"{entry.entry_id}_stations"
         self._attr_icon = "mdi:lightning-bolt"
+        _LOGGER.debug("Initialized WeatherFlowTrilaterationSensor: name=%s, unique_id=%s", self._attr_name, self._attr_unique_id)
 
     @property
     def state(self) -> int:
         """Return the state of the sensor (count of configured/discovered stations)."""
-        return len(self._coordinator.all_stations)
+        count = len(self._coordinator.all_stations)
+        _LOGGER.debug("WeatherFlowTrilaterationSensor state queried: %d stations", count)
+        return count
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -63,7 +69,13 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
                     }
                 )
 
-        return {"stations": stations_data}
+        attrs = {"stations": stations_data}
+        _LOGGER.debug("WeatherFlowTrilaterationSensor attributes queried: %s", attrs)
+        return attrs
+
+    async def async_added_to_hass(self) -> None:
+        """Call when entity is added to hass."""
+        _LOGGER.debug("WeatherFlowTrilaterationSensor successfully added to HASS: unique_id=%s", self.unique_id)
 
     async def async_update(self) -> None:
         """Update the sensor."""

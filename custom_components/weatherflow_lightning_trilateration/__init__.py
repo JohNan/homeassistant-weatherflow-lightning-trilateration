@@ -31,6 +31,7 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up WeatherFlow Lightning Trilateration from a config entry."""
+    _LOGGER.debug("Setting up WeatherFlow Lightning Trilateration config entry: %s", entry.entry_id)
     coordinator = TempestStrikeCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
@@ -92,6 +93,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         hass.bus.async_listen_once("homeassistant_started", _register_resource)
 
+    _LOGGER.debug("Forwarding config entry setups to platforms: ['geo_location', 'sensor']")
     await hass.config_entries.async_forward_entry_setups(
         entry, ["geo_location", "sensor"]
     )
@@ -279,18 +281,24 @@ class TempestStrikeCoordinator:
     async def _async_resolve_stations_metadata(self) -> None:
         """Resolve device IDs and coordinates for all configured and discovered stations."""
         session = async_get_clientsession(self.hass)
+        _LOGGER.debug(
+            "Starting station metadata resolution. Configured stations/IDs: %s",
+            self.all_stations,
+        )
 
         # 1. If we have a token, fetch the user's own stations and devices list first.
         # This allows us to map device IDs/serial numbers (like 00172794) to their correct station IDs.
         if self.api_token:
             user_stations_url = "https://swd.weatherflow.com/swd/rest/stations"
             params = {"token": self.api_token}
+            _LOGGER.debug("Fetching user stations list from REST API via URL: %s", user_stations_url)
             try:
                 async with session.get(
                     user_stations_url, params=params, timeout=10
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
+                        _LOGGER.debug("User stations list response: %s", data)
                         stations = data.get("stations", [])
                         for station in stations:
                             station_id = str(station.get("station_id", ""))
@@ -308,6 +316,12 @@ class TempestStrikeCoordinator:
                                 serial = str(device.get("serial_number", ""))
                                 if dev_id and dev_id.isdigit():
                                     self.device_to_station[dev_id] = station_id
+                                    _LOGGER.debug(
+                                        "Mapped user device_id %s (serial %s) to station_id %s",
+                                        dev_id,
+                                        serial,
+                                        station_id,
+                                    )
                                     if lat is not None and lon is not None:
                                         self.station_coords[dev_id] = (
                                             float(lat),
@@ -328,6 +342,7 @@ class TempestStrikeCoordinator:
                 _LOGGER.debug("Error fetching user stations list: %s", e)
 
         # 2. Update any configured device ID or serial number in self.all_stations to the resolved station ID
+        _LOGGER.debug("Mapping configured device/station IDs to resolved station IDs")
         for idx, s_id in enumerate(self.all_stations):
             if s_id in self.device_to_station:
                 resolved_station = self.device_to_station[s_id]
@@ -340,6 +355,7 @@ class TempestStrikeCoordinator:
 
         # 3. For any remaining station ID, query the public/metadata stations endpoint if not already resolved.
         # If the API token is missing, we skip and use the fallback.
+        _LOGGER.debug("Resolving remaining station metadata from public REST API. Active stations list: %s", self.all_stations)
         if not self.api_token:
             # Fallback mapping: assume device_id is station_id
             for station in self.all_stations:
@@ -355,10 +371,12 @@ class TempestStrikeCoordinator:
             if station_id in self.station_coords and any(
                 sid == station_id for sid in self.device_to_station.values()
             ):
+                _LOGGER.debug("Station %s is already resolved (coords: %s). Skipping query.", station_id, self.station_coords[station_id])
                 continue
 
             url = f"https://swd.weatherflow.com/swd/rest/stations/{station_id}"
             params = {"token": self.api_token}
+            _LOGGER.debug("Querying metadata for station %s via URL: %s", station_id, url)
             try:
                 async with session.get(url, params=params, timeout=10) as response:
                     if response.status == 200:
@@ -475,8 +493,10 @@ class TempestStrikeCoordinator:
                         await websocket.send(json.dumps(sub_msg))
                         _LOGGER.debug("Subscribed to device: %s", device_id)
 
+                    _LOGGER.info("Tempest WebSocket connection established successfully")
                     async for message in websocket:
                         try:
+                            _LOGGER.debug("WebSocket message received: %s", message)
                             message_data = json.loads(message)
                             self._process_incoming_message(message_data)
                         except json.JSONDecodeError:
@@ -540,19 +560,24 @@ class TempestStrikeCoordinator:
 
     def _process_incoming_message(self, message_data: dict) -> None:
         """Process an incoming WebSocket message."""
-        if message_data.get("type") != "evt_strike":
+        msg_type = message_data.get("type")
+        _LOGGER.debug("Processing WebSocket message of type: %s", msg_type)
+        if msg_type != "evt_strike":
             return
 
         device_id = str(message_data.get("device_id"))
         evt = message_data.get("evt", [])
         if len(evt) < 2:
+            _LOGGER.debug("Skipping strike event with incomplete payload")
             return
 
         timestamp = int(evt[0])
         distance = float(evt[1])
+        _LOGGER.debug("Parsed strike event: device_id=%s, timestamp=%d, distance=%f", device_id, timestamp, distance)
 
         # Map device_id to station_id
         station_id = self.device_to_station.get(device_id, device_id)
+        _LOGGER.debug("Mapped device_id %s to station_id %s", device_id, station_id)
 
         # Find or create a group bucket matching timestamp within a 1-second variance tolerance
         matched_timestamp = None
@@ -564,11 +589,13 @@ class TempestStrikeCoordinator:
         if matched_timestamp is None:
             matched_timestamp = timestamp
             self.strike_buffer[matched_timestamp] = {}
+            _LOGGER.debug("Created new strike buffer bucket for timestamp %d", matched_timestamp)
 
         self.strike_buffer[matched_timestamp][station_id] = distance
+        bucket = self.strike_buffer[matched_timestamp]
+        _LOGGER.debug("Current strike buffer status for bucket %d: %s", matched_timestamp, bucket)
 
         # Check if the bucket has at least 3 unique station reports
-        bucket = self.strike_buffer[matched_timestamp]
         if len(bucket) >= 3:
             strike_events = []
             for dev_id, dist in list(bucket.items()):
@@ -576,10 +603,12 @@ class TempestStrikeCoordinator:
                 if coords:
                     strike_events.append((coords[0], coords[1], dist))
 
+            _LOGGER.debug("Clearing bucket %d from buffer and invoking trilateration calculations", matched_timestamp)
             # Evict from buffer to prevent reprocessing
             del self.strike_buffer[matched_timestamp]
 
             if len(strike_events) >= 3:
+                _LOGGER.debug("Invoking trilateration with coordinates/distances: %s", strike_events)
                 self._calculate_trilateration(strike_events)
 
         # Cleanup old entries to prevent memory leak
