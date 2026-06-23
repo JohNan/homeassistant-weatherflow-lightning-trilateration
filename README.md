@@ -15,7 +15,13 @@ A native Home Assistant custom integration that connects to the WeatherFlow Temp
 - **Trilateration Engine:** Employs a flat-plane Cramer's rule approximation to dynamically calculate the intersection of lightning strike distances from 3 or more stations.
 - **Map Visualizations:** Places temporary geolocation markers representing strikes on the map, which automatically disappear after 6 hours.
 - **Simulation/Testing Service:** Exposes a custom service to trigger simulated strikes anywhere, allowing end-to-end testing of map markers and dashboard animations.
-- **3D Dashboard Card:** Includes a custom WebGL Lovelace dashboard card visualizing strikes, shockwaves, and expanding trilateration range intersection spheres in 3D.
+- **3D WebGL Dashboard Card:** Includes an advanced 3D visualizer Lovelace card showcasing:
+  - *Real-world 3D Terrain:* Queries Open-Meteo elevation data centered at the primary station coordinates and generates a displaced 3D terrain surface.
+  - *Draped Reference Rings:* Places 10km, 20km, and 30km concentric range rings and crosshair compass lines that drape over the terrain bumps.
+  - *Interactive Tooltips:* Raycaster-based interactive mouseover tooltips showing station IDs, coordinates, and types.
+  - *Auto-Orbit:* Slow idle camera rotation when no user interaction is detected.
+  - *Volumetric Bolt Glows:* Blends additive canvas-based particle glow sprites at strike terminal points.
+  - *Timeline-Synchronized Heatmap:* Storm path decay tracker preserving recent strikes as shrinking, fading amber indicators matching the virtual timeline playback speed.
 - **Robust Connection Handling:** Automatically handles connection drops with exponential backoff retries.
 
 ---
@@ -41,7 +47,7 @@ custom_components/weatherflow_lightning_trilateration/
 └── translations/
     └── en.json          # English translation strings for Setup UI
 hacs.json                # HACS configuration properties
-mise.toml                # Developer environment task orchestrator
+mise.toml                # Developer environment task orchestrator (linting, JSON, and JS syntax checks)
 ```
 
 ---

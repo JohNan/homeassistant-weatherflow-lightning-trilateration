@@ -16,3 +16,8 @@ This workspace represents a Home Assistant custom integration codebase. All agen
   2. Third-party imports (voluptuous, websockets, homeassistant core helper imports).
   3. Local integration-relative imports.
 - Format python script contents strictly using standard formatting specs (pep8/black style). Double-quote all strings unless escaping is avoided.
+
+## Frontend Visualizer Card Development Rules
+- **Syntax Validation:** Always run node-based checks via task-runner (`mise run validate-js` or `node --check`) before committing javascript changes.
+- **Geographic Terrain Alignment:** Ensure all visual elements (weather stations, concentric range rings, crosshair lines, strike targets, and heatmap indicators) sample the terrain altitude via `getTerrainHeight(x, z)` to prevent clipping or floating above the displaced 3D mesh.
+- **WebGL Memory Management:** Dispose of materials and geometries properly (`material.dispose()`, `geometry.dispose()`) when transient or dynamic meshes/sprites (such as volumetric glows or heatmap points) are evicted from the scene to prevent memory leaks.
