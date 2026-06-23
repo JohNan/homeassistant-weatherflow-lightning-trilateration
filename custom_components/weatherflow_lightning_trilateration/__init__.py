@@ -92,14 +92,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         hass.bus.async_listen_once("homeassistant_started", _register_resource)
 
-    await hass.config_entries.async_forward_entry_setups(entry, ["geo_location"])
+    await hass.config_entries.async_forward_entry_setups(
+        entry, ["geo_location", "sensor"]
+    )
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(
-        entry, ["geo_location"]
+        entry, ["geo_location", "sensor"]
     )
     if unload_ok:
         coordinator = hass.data[DOMAIN].pop(entry.entry_id)
@@ -386,9 +388,7 @@ class TempestStrikeCoordinator:
                     else:
                         # Log 404 as info since it could be an unresolved device ID or serial number
                         log_level = (
-                            logging.INFO
-                            if response.status == 404
-                            else logging.WARNING
+                            logging.INFO if response.status == 404 else logging.WARNING
                         )
                         _LOGGER.log(
                             log_level,
