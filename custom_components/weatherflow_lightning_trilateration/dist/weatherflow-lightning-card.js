@@ -553,6 +553,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       const texture = new THREE.CanvasTexture(canvas);
       if (this.terrainMesh && this.terrainMesh.material) {
         this.terrainMesh.material.map = texture;
+        this.terrainMesh.material.color.setHex(0xffffff); // change to white to prevent multiplication darkening
         this.terrainMesh.material.needsUpdate = true;
       }
     });
