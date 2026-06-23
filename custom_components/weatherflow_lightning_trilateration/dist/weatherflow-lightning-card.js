@@ -41,14 +41,58 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (!config) {
       throw new Error("Invalid configuration");
     }
-    this.config = config;
+    const oldConfig = this.config;
+    this.config = {
+      height: "350px",
+      show_grid: true,
+      show_map: true,
+      show_rings: true,
+      show_heatmap: true,
+      auto_orbit: true,
+      zoom_level: 18.0,
+      ...config
+    };
     if (this.container) {
-      const height = this.config.height || '350px';
+      const height = this.config.height;
       if (height.endsWith('px')) {
         const val = parseInt(height);
         this.container.style.height = `${val - 40}px`;
       } else {
         this.container.style.height = height;
+      }
+    }
+    if (this.initialized) {
+      this.applyConfigChanges(oldConfig || {});
+    }
+  }
+
+  applyConfigChanges(oldConfig) {
+    if (this.terrainWire) {
+      this.terrainWire.visible = this.config.show_grid !== false;
+    }
+    if (this.rangeRingsGroup) {
+      this.rangeRingsGroup.visible = this.config.show_rings !== false;
+    }
+    
+    if (oldConfig.show_map !== this.config.show_map) {
+      if (this.config.show_map) {
+        if (this.lastRefLat && this.lastRefLon) {
+          this.loadMapTexture(this.lastRefLat, this.lastRefLon);
+        }
+      } else {
+        if (this.terrainMesh && this.terrainMesh.material) {
+          this.terrainMesh.material.map = null;
+          this.terrainMesh.material.color.setHex(0x050b14);
+          this.terrainMesh.material.needsUpdate = true;
+        }
+      }
+    }
+    
+    if (oldConfig.zoom_level !== this.config.zoom_level) {
+      const parsed = parseFloat(this.config.zoom_level);
+      if (!isNaN(parsed)) {
+        this.zoomRadius = parsed;
+        this.updateCameraPosition();
       }
     }
   }
@@ -130,7 +174,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 1000);
     
     // Custom camera controls setup
-    this.zoomRadius = 18.0;
+    this.zoomRadius = this.config.zoom_level !== undefined ? parseFloat(this.config.zoom_level) : 18.0;
     this.cameraTheta = 0.0;
     this.cameraPhi = Math.atan2(30, 15);
     this.updateCameraPosition();
@@ -304,6 +348,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   addRangeRings() {
     this.rangeRingsGroup = new THREE.Group();
+    this.rangeRingsGroup.visible = this.config.show_rings !== false;
     this.scene.add(this.rangeRingsGroup);
 
     const radii = [10, 20, 30];
@@ -484,6 +529,14 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   loadMapTexture(refLat, refLon) {
+    if (this.config.show_map === false) {
+      if (this.terrainMesh && this.terrainMesh.material) {
+        this.terrainMesh.material.map = null;
+        this.terrainMesh.material.color.setHex(0x050b14);
+        this.terrainMesh.material.needsUpdate = true;
+      }
+      return;
+    }
     const zoom = 10;
     const spanKm = 50.0;
     
@@ -771,6 +824,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     
     this.terrainWire = new THREE.Mesh(this.terrainGeo, wireMat);
     this.terrainWire.rotation.x = -Math.PI / 2;
+    this.terrainWire.visible = this.config.show_grid !== false;
     this.scene.add(this.terrainWire);
 
     // Range rings & compass crosshairs
@@ -830,13 +884,23 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     // Idle camera orbit
     const now = Date.now();
-    if (now - this.lastInteractionTime > 8000) {
+    if (this.config.auto_orbit !== false && (now - this.lastInteractionTime > 8000)) {
       this.cameraTheta += 0.0005;
       this.updateCameraPosition();
     }
 
     // Update heatmap
-    this.updateHeatmap();
+    if (this.config.show_heatmap !== false) {
+      this.updateHeatmap();
+    } else {
+      if (this.heatmapMeshes && this.heatmapMeshes.size > 0) {
+        for (const [id, hm] of this.heatmapMeshes.entries()) {
+          this.scene.remove(hm.mesh);
+          if (hm.material) hm.material.dispose();
+        }
+        this.heatmapMeshes.clear();
+      }
+    }
 
     if (this.starField) this.starField.rotation.y += 0.0001;
 
@@ -1435,6 +1499,30 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       if (heightInput) {
         heightInput.value = this._config.height || '350px';
       }
+      const zoomInput = this.shadowRoot.getElementById('zoom_level');
+      if (zoomInput) {
+        zoomInput.value = this._config.zoom_level !== undefined ? this._config.zoom_level : '18.0';
+      }
+      const showGridInput = this.shadowRoot.getElementById('show_grid');
+      if (showGridInput) {
+        showGridInput.checked = this._config.show_grid !== false;
+      }
+      const showMapInput = this.shadowRoot.getElementById('show_map');
+      if (showMapInput) {
+        showMapInput.checked = this._config.show_map !== false;
+      }
+      const showRingsInput = this.shadowRoot.getElementById('show_rings');
+      if (showRingsInput) {
+        showRingsInput.checked = this._config.show_rings !== false;
+      }
+      const showHeatmapInput = this.shadowRoot.getElementById('show_heatmap');
+      if (showHeatmapInput) {
+        showHeatmapInput.checked = this._config.show_heatmap !== false;
+      }
+      const autoOrbitInput = this.shadowRoot.getElementById('auto_orbit');
+      if (autoOrbitInput) {
+        autoOrbitInput.checked = this._config.auto_orbit !== false;
+      }
     }
   }
 
@@ -1450,18 +1538,26 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
         .card-config {
           display: flex;
           flex-direction: column;
-          gap: 16px;
+          gap: 14px;
+          font-family: var(--paper-font-body1_-_font-family, inherit);
+        }
+        .config-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 8px 0;
+          border-bottom: 1px solid var(--divider-color, #e0e0e0);
         }
         .paper-input-container {
           display: flex;
           flex-direction: column;
+          gap: 4px;
         }
         label {
           color: var(--secondary-text-color, #727272);
-          font-size: 12px;
-          margin-bottom: 4px;
+          font-size: 13px;
         }
-        input {
+        input[type="text"] {
           padding: 8px;
           background: var(--card-background-color, transparent);
           color: var(--primary-text-color, #212121);
@@ -1469,34 +1565,137 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
           border-bottom: 1px solid var(--divider-color, #e0e0e0);
           font-family: inherit;
         }
-        input:focus {
+        input[type="text"]:focus {
           outline: none;
           border-bottom: 2px solid var(--primary-color, #03a9f4);
+        }
+        /* Custom toggle switch */
+        .switch {
+          position: relative;
+          display: inline-block;
+          width: 36px;
+          height: 20px;
+        }
+        .switch input {
+          opacity: 0;
+          width: 0;
+          height: 0;
+        }
+        .slider {
+          position: absolute;
+          cursor: pointer;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background-color: #ccc;
+          transition: .2s;
+          border-radius: 20px;
+        }
+        .slider:before {
+          position: absolute;
+          content: "";
+          height: 14px;
+          width: 14px;
+          left: 3px;
+          bottom: 3px;
+          background-color: white;
+          transition: .2s;
+          border-radius: 50%;
+        }
+        input:checked + .slider {
+          background-color: var(--primary-color, #03a9f4);
+        }
+        input:checked + .slider:before {
+          transform: translateX(16px);
         }
       </style>
       <div class="card-config">
         <div class="paper-input-container">
-          <label for="height">Height (e.g. 350px)</label>
+          <label for="height">Card Height (e.g. 350px)</label>
           <input type="text" id="height" value="${this._config.height || '350px'}">
+        </div>
+        <div class="paper-input-container">
+          <label for="zoom_level">Default Zoom Radius (10-150)</label>
+          <input type="text" id="zoom_level" value="${this._config.zoom_level !== undefined ? this._config.zoom_level : '18.0'}">
+        </div>
+        
+        <div class="config-row">
+          <label for="show_grid">Show Terrain Grid Overlay</label>
+          <label class="switch">
+            <input type="checkbox" id="show_grid" ${this._config.show_grid !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="config-row">
+          <label for="show_map">Show Ground Map Texture</label>
+          <label class="switch">
+            <input type="checkbox" id="show_map" ${this._config.show_map !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="config-row">
+          <label for="show_rings">Show Range Rings & Crosshairs</label>
+          <label class="switch">
+            <input type="checkbox" id="show_rings" ${this._config.show_rings !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="config-row">
+          <label for="show_heatmap">Show Storm Path Heatmap</label>
+          <label class="switch">
+            <input type="checkbox" id="show_heatmap" ${this._config.show_heatmap !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="config-row">
+          <label for="auto_orbit">Enable Idle Camera Orbit</label>
+          <label class="switch">
+            <input type="checkbox" id="auto_orbit" ${this._config.auto_orbit !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
         </div>
       </div>
     `;
 
-    const heightInput = this.shadowRoot.getElementById('height');
-    heightInput.addEventListener('input', (e) => this.configChanged(e));
+    this.shadowRoot.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+      checkbox.addEventListener('change', (e) => this.toggleChanged(e));
+    });
+    
+    this.shadowRoot.querySelectorAll('input[type="text"]').forEach(input => {
+      input.addEventListener('input', (e) => this.textChanged(e));
+    });
   }
 
-  configChanged(e) {
+  toggleChanged(e) {
     if (!this._config) return;
-
     const target = e.target;
-    if (this._config[target.id] === target.value) return;
+    this.dispatchConfigChange(target.id, target.checked);
+  }
 
+  textChanged(e) {
+    if (!this._config) return;
+    const target = e.target;
+    let value = target.value;
+    if (target.id === 'zoom_level') {
+      const parsed = parseFloat(value);
+      if (!isNaN(parsed)) {
+        value = parsed;
+      }
+    }
+    this.dispatchConfigChange(target.id, value);
+  }
+
+  dispatchConfigChange(key, value) {
+    if (this._config[key] === value) return;
     const newConfig = {
       ...this._config,
-      [target.id]: target.value,
+      [key]: value
     };
-
     const event = new CustomEvent("config-changed", {
       detail: { config: newConfig },
       bubbles: true,
