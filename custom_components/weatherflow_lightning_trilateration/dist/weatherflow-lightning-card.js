@@ -5,7 +5,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.initialized = false;
     this.knownStrikes = new Set();
     this.stations = [
-      { id: "Primary (Home)", x: 0, z: 0, color: 0x00f2fe },
+      { id: "Primary (Home)", x: 0, z: 0, color: 0x10b981 },
       { id: "Neighbor 1", x: 10, z: 10, color: 0x38bdf8 },
       { id: "Neighbor 2", x: -10, z: 10, color: 0x38bdf8 }
     ];
@@ -643,9 +643,9 @@ class WeatherFlowLightningCard extends HTMLElement {
             const gridX = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
             const gridZ = R * (lat - refLat) * (Math.PI / 180.0);
 
-            let color = 0x38bdf8; // default / discovered
-            if (st.type === "primary") color = 0x00f2fe;
-            else if (st.type === "neighbor") color = 0x38bdf8;
+            let color = 0x64748b; // subtle blue-gray for discovered/public
+            if (st.type === "primary") color = 0x10b981; // vibrant emerald green for local/primary
+            else if (st.type === "neighbor") color = 0x38bdf8; // sky blue for neighbors
 
             return {
               id: st.id,
