@@ -18,6 +18,11 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.playbackSpeed = 120; // 120x speed playback
     this.lastTickTime = Date.now();
     this.lastPlayTickTime = Date.now();
+    this.lastInteractionTime = Date.now();
+    this.heatmapMeshes = new Map();
+    this.elevationGrid = [];
+    this.glowTexture = null;
+    this.heatGeo = null;
   }
 
   static getConfigElement() {
@@ -134,26 +139,57 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
     this.container.appendChild(this.renderer.domElement);
 
+    // Tooltip DOM element creation
+    this.tooltip = document.createElement('div');
+    this.tooltip.style.position = 'absolute';
+    this.tooltip.style.backgroundColor = 'rgba(8, 12, 20, 0.95)';
+    this.tooltip.style.color = '#e2e8f0';
+    this.tooltip.style.padding = '8px 12px';
+    this.tooltip.style.borderRadius = '6px';
+    this.tooltip.style.border = '1px solid rgba(56, 189, 248, 0.4)';
+    this.tooltip.style.fontSize = '12px';
+    this.tooltip.style.pointerEvents = 'none';
+    this.tooltip.style.display = 'none';
+    this.tooltip.style.zIndex = '10';
+    this.tooltip.style.fontFamily = 'sans-serif';
+    this.tooltip.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.5)';
+    this.container.appendChild(this.tooltip);
+
+    // Interactive helper variables
+    this.raycaster = new THREE.Raycaster();
+    this.mouse = new THREE.Vector2();
+    this.glowTexture = this.createGlowTexture();
+    this.heatGeo = new THREE.SphereGeometry(0.15, 8, 8);
+    this.lastInteractionTime = Date.now();
+
     // Add mouse & touch event listeners for rotation/zoom
     let isDragging = false;
     let previousMousePosition = { x: 0, y: 0 };
 
     this.container.addEventListener('mousedown', (e) => {
+      this.lastInteractionTime = Date.now();
       isDragging = true;
       this.container.style.cursor = 'grabbing';
       previousMousePosition = { x: e.clientX, y: e.clientY };
     });
 
     this.container.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      const deltaX = e.clientX - previousMousePosition.x;
-      const deltaY = e.clientY - previousMousePosition.y;
+      this.lastInteractionTime = Date.now();
+      if (isDragging) {
+        const deltaX = e.clientX - previousMousePosition.x;
+        const deltaY = e.clientY - previousMousePosition.y;
 
-      this.cameraTheta -= deltaX * 0.005;
-      this.cameraPhi += deltaY * 0.005;
-      this.updateCameraPosition();
+        this.cameraTheta -= deltaX * 0.005;
+        this.cameraPhi += deltaY * 0.005;
+        this.updateCameraPosition();
 
-      previousMousePosition = { x: e.clientX, y: e.clientY };
+        previousMousePosition = { x: e.clientX, y: e.clientY };
+      } else {
+        const rect = this.renderer.domElement.getBoundingClientRect();
+        this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        this.checkHover(e.clientX - rect.left, e.clientY - rect.top);
+      }
     });
 
     this._mouseupHandler = () => {
@@ -162,7 +198,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     };
     window.addEventListener('mouseup', this._mouseupHandler);
 
+    this.container.addEventListener('mouseleave', () => {
+      this.hideTooltip();
+    });
+
     this.container.addEventListener('wheel', (e) => {
+      this.lastInteractionTime = Date.now();
+      this.hideTooltip();
       e.preventDefault();
       this.zoomRadius += e.deltaY * 0.02;
       this.updateCameraPosition();
@@ -171,6 +213,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     let touchStartDist = 0;
 
     this.container.addEventListener('touchstart', (e) => {
+      this.lastInteractionTime = Date.now();
+      this.hideTooltip();
       if (e.touches.length === 1) {
         isDragging = true;
         previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -184,6 +228,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
 
     this.container.addEventListener('touchmove', (e) => {
+      this.lastInteractionTime = Date.now();
       if (e.touches.length === 1 && isDragging) {
         const deltaX = e.touches[0].clientX - previousMousePosition.x;
         const deltaY = e.touches[0].clientY - previousMousePosition.y;
@@ -233,6 +278,314 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.animate();
   }
 
+  createGlowTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    
+    const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grad.addColorStop(0, 'rgba(0, 242, 254, 1.0)');
+    grad.addColorStop(0.2, 'rgba(0, 242, 254, 0.8)');
+    grad.addColorStop(0.5, 'rgba(239, 68, 68, 0.3)');
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 64, 64);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    return texture;
+  }
+
+  addRangeRings() {
+    this.rangeRingsGroup = new THREE.Group();
+    this.scene.add(this.rangeRingsGroup);
+
+    const radii = [10, 20, 30];
+    
+    radii.forEach((r) => {
+      const points = [];
+      const segments = 128;
+      for (let i = 0; i <= segments; i++) {
+        const theta = (i / segments) * Math.PI * 2;
+        const x = r * Math.cos(theta);
+        const z = r * Math.sin(theta);
+        points.push(new THREE.Vector3(x, 0.05, z));
+      }
+      const ringGeo = new THREE.BufferGeometry().setFromPoints(points);
+      const ringMat = new THREE.LineBasicMaterial({
+        color: 0x38bdf8,
+        transparent: true,
+        opacity: 0.2
+      });
+      const ringLine = new THREE.Line(ringGeo, ringMat);
+      this.rangeRingsGroup.add(ringLine);
+    });
+
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.15
+    });
+    
+    // N-S line (41 points)
+    const nsPoints = [];
+    const segments = 40;
+    for (let i = 0; i <= segments; i++) {
+      const z = -30 + (i / segments) * 60;
+      nsPoints.push(new THREE.Vector3(0, 0.05, z));
+    }
+    const nsGeo = new THREE.BufferGeometry().setFromPoints(nsPoints);
+    const nsLine = new THREE.Line(nsGeo, lineMat);
+    this.rangeRingsGroup.add(nsLine);
+
+    // E-W line (41 points)
+    const ewPoints = [];
+    for (let i = 0; i <= segments; i++) {
+      const x = -30 + (i / segments) * 60;
+      ewPoints.push(new THREE.Vector3(x, 0.05, 0));
+    }
+    const ewGeo = new THREE.BufferGeometry().setFromPoints(ewPoints);
+    const ewLine = new THREE.Line(ewGeo, lineMat);
+    this.rangeRingsGroup.add(ewLine);
+  }
+
+  updateRangeRings() {
+    if (!this.rangeRingsGroup || !this.rangeRingsGroup.children) return;
+    
+    const children = this.rangeRingsGroup.children;
+    const radii = [10, 20, 30];
+    
+    radii.forEach((r, idx) => {
+      const ringLine = children[idx];
+      if (ringLine) {
+        const posAttr = ringLine.geometry.attributes.position;
+        const segments = 128;
+        for (let i = 0; i <= segments; i++) {
+          const theta = (i / segments) * Math.PI * 2;
+          const x = r * Math.cos(theta);
+          const z = r * Math.sin(theta);
+          const y = this.getTerrainHeight(x, z) + 0.1;
+          posAttr.setY(i, y);
+        }
+        posAttr.needsUpdate = true;
+      }
+    });
+
+    // Update crosshair lines (index 3 and 4)
+    const nsLine = children[3];
+    if (nsLine) {
+      const posAttr = nsLine.geometry.attributes.position;
+      const segments = 40;
+      for (let i = 0; i <= segments; i++) {
+        const z = -30 + (i / segments) * 60;
+        const y = this.getTerrainHeight(0, z) + 0.1;
+        posAttr.setXYZ(i, 0, y, z);
+      }
+      posAttr.needsUpdate = true;
+    }
+
+    const ewLine = children[4];
+    if (ewLine) {
+      const posAttr = ewLine.geometry.attributes.position;
+      const segments = 40;
+      for (let i = 0; i <= segments; i++) {
+        const x = -30 + (i / segments) * 60;
+        const y = this.getTerrainHeight(x, 0) + 0.1;
+        posAttr.setXYZ(i, x, y, 0);
+      }
+      posAttr.needsUpdate = true;
+    }
+  }
+
+  getTerrainHeight(x, z) {
+    if (!this.elevationGrid || this.elevationGrid.length !== 225) return 0;
+    
+    const c = (x + 20) * 14 / 40;
+    const r = (z + 20) * 14 / 40;
+    
+    if (c < 0 || c > 14 || r < 0 || r > 14) return 0;
+    
+    const c0 = Math.floor(c);
+    const c1 = Math.min(14, c0 + 1);
+    const r0 = Math.floor(r);
+    const r1 = Math.min(14, r0 + 1);
+    
+    const tx = c - c0;
+    const tz = r - r0;
+    
+    const h00 = this.getGridHeight(r0, c0);
+    const h10 = this.getGridHeight(r0, c1);
+    const h01 = this.getGridHeight(r1, c0);
+    const h11 = this.getGridHeight(r1, c1);
+    
+    const h0 = h00 * (1 - tx) + h10 * tx;
+    const h1 = h01 * (1 - tx) + h11 * tx;
+    
+    return h0 * (1 - tz) + h1 * tz;
+  }
+
+  getGridHeight(r, c) {
+    if (!this.elevationGrid || this.elevationGrid.length !== 225) return 0;
+    const i = 14 - r;
+    const j = c;
+    const rawElev = this.elevationGrid[i * 15 + j] || 0;
+    const centerIndex = 7 * 15 + 7;
+    const refElevation = this.elevationGrid[centerIndex] || 0;
+    const scaleFactor = 1.5 / 1250.0;
+    return (rawElev - refElevation) * scaleFactor;
+  }
+
+  updateTerrainGeometry(elevationGrid) {
+    if (!elevationGrid || elevationGrid.length !== 225) return;
+    this.elevationGrid = elevationGrid;
+    
+    const posAttr = this.terrainGeo.attributes.position;
+    const centerIndex = 7 * 15 + 7;
+    const refElevation = elevationGrid[centerIndex] || 0;
+    const scaleFactor = 1.5 / 1250.0;
+
+    for (let r = 0; r <= 14; r++) {
+      const i = 14 - r;
+      for (let c = 0; c <= 14; c++) {
+        const j = c;
+        const vertexIndex = r * 15 + c;
+        const rawElev = elevationGrid[i * 15 + j] || 0;
+        const relElev = (rawElev - refElevation) * scaleFactor;
+        posAttr.setZ(vertexIndex, relElev);
+      }
+    }
+    posAttr.needsUpdate = true;
+    this.terrainGeo.computeVertexNormals();
+    
+    this.updateStationHeights();
+    this.updateRangeRings();
+  }
+
+  updateStationHeights() {
+    if (!this.stationMeshes || !this.stations) return;
+    this.stations.forEach((st, idx) => {
+      const sm = this.stationMeshes[idx];
+      if (sm && sm.mesh) {
+        const terrainY = this.getTerrainHeight(st.x, st.z);
+        sm.mesh.position.y = terrainY;
+      }
+    });
+  }
+
+  showTooltip(st, x, y) {
+    if (!this.tooltip) return;
+    let typeLabel = "Discovered Station";
+    if (st.type === "primary") typeLabel = "Primary Station";
+    else if (st.type === "neighbor") typeLabel = "Neighbor Station";
+
+    this.tooltip.innerHTML = `
+      <div style="font-weight: bold; color: #38bdf8; margin-bottom: 2px;">ID: ${st.id}</div>
+      <div style="font-size: 11px; color: #94a3b8;">Type: ${typeLabel}</div>
+      <div style="font-size: 11px; color: #94a3b8;">Coords: ${st.x.toFixed(2)}, ${st.z.toFixed(2)} km</div>
+    `;
+    this.tooltip.style.display = 'block';
+    
+    const rect = this.container.getBoundingClientRect();
+    let left = x + 15;
+    let top = y + 15;
+    
+    if (left + 150 > rect.width) {
+      left = x - 165;
+    }
+    if (top + 60 > rect.height) {
+      top = y - 75;
+    }
+    
+    this.tooltip.style.left = `${left}px`;
+    this.tooltip.style.top = `${top}px`;
+  }
+
+  hideTooltip() {
+    if (this.tooltip) {
+      this.tooltip.style.display = 'none';
+    }
+  }
+
+  checkHover(clientX, clientY) {
+    if (!this.camera || !this.stationMeshes || !this.raycaster) return;
+
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const intersects = this.raycaster.intersectObjects(this.stationMeshes.map(sm => sm.mesh), true);
+
+    if (intersects.length > 0) {
+      let obj = intersects[0].object;
+      while (obj && obj.parent && (!obj.userData || !obj.userData.station)) {
+        obj = obj.parent;
+      }
+
+      if (obj && obj.userData && obj.userData.station) {
+        const st = obj.userData.station;
+        this.showTooltip(st, clientX, clientY);
+        this.container.style.cursor = 'pointer';
+        return;
+      }
+    }
+
+    this.hideTooltip();
+    if (this.container.style.cursor === 'pointer') {
+      this.container.style.cursor = 'grab';
+    }
+  }
+
+  updateHeatmap() {
+    if (!this.scene) return;
+    const lifespan = 90000;
+    const nowVirtual = this.playbackTime;
+    
+    const activeHeatmapStrikes = this.strikeHistory.filter(s => {
+      const age = nowVirtual - s.time;
+      return age >= 0 && age <= lifespan;
+    });
+
+    if (!this.heatmapMeshes) {
+      this.heatmapMeshes = new Map();
+    }
+
+    for (const [id, hm] of this.heatmapMeshes.entries()) {
+      if (!activeHeatmapStrikes.some(s => s.id === id)) {
+        this.scene.remove(hm.mesh);
+        if (hm.material) hm.material.dispose();
+        this.heatmapMeshes.delete(id);
+      }
+    }
+
+    activeHeatmapStrikes.forEach(s => {
+      const age = nowVirtual - s.time;
+      const pct = age / lifespan;
+      const opacity = 0.7 * (1.0 - pct);
+      const scale = 1.0 - pct * 0.4;
+      
+      let hm = this.heatmapMeshes.get(s.id);
+      if (!hm) {
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
+          transparent: true,
+          opacity: opacity,
+          depthWrite: false
+        });
+        const mesh = new THREE.Mesh(this.heatGeo, mat);
+        const y = this.getTerrainHeight(s.x, s.z);
+        mesh.position.set(s.x, y, s.z);
+        mesh.scale.set(scale, scale, scale);
+        this.scene.add(mesh);
+        
+        hm = { mesh, material: mat };
+        this.heatmapMeshes.set(s.id, hm);
+      } else {
+        hm.material.opacity = opacity;
+        hm.mesh.scale.set(scale, scale, scale);
+        const y = this.getTerrainHeight(s.x, s.z);
+        hm.mesh.position.y = y;
+      }
+    });
+  }
+
   addStaticElements() {
     // Ambient light
     const ambientLight = new THREE.AmbientLight(0x0f172a, 1.5);
@@ -268,23 +621,43 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     // Terrain grid
     const mapSize = 40;
-    const gridGeo = new THREE.PlaneGeometry(mapSize, mapSize, 20, 20);
-    const gridMat = new THREE.MeshBasicMaterial({
-      color: 0x0c4a6e,
+    this.terrainGeo = new THREE.PlaneGeometry(mapSize, mapSize, 14, 14);
+    
+    const terrainMat = new THREE.MeshPhongMaterial({
+      color: 0x050b14,
+      emissive: 0x01050a,
+      specular: 0x111e2e,
+      shininess: 30,
+      flatShading: true,
+      side: THREE.DoubleSide
+    });
+    
+    this.terrainMesh = new THREE.Mesh(this.terrainGeo, terrainMat);
+    this.terrainMesh.rotation.x = -Math.PI / 2;
+    this.scene.add(this.terrainMesh);
+
+    const wireMat = new THREE.MeshBasicMaterial({
+      color: 0x00f2fe,
       wireframe: true,
       transparent: true,
-      opacity: 0.3
+      opacity: 0.15
     });
-    this.terrainGrid = new THREE.Mesh(gridGeo, gridMat);
-    this.terrainGrid.rotation.x = -Math.PI / 2;
-    this.scene.add(this.terrainGrid);
+    
+    this.terrainWire = new THREE.Mesh(this.terrainGeo, wireMat);
+    this.terrainWire.rotation.x = -Math.PI / 2;
+    this.scene.add(this.terrainWire);
+
+    // Range rings & compass crosshairs
+    this.addRangeRings();
   }
 
   addWeatherStations() {
     this.stationMeshes = [];
     this.stations.forEach(st => {
       const group = new THREE.Group();
-      group.position.set(st.x, 0, st.z);
+      const terrainY = this.getTerrainHeight(st.x, st.z);
+      group.position.set(st.x, terrainY, st.z);
+      group.userData = { station: st };
 
       const ringGeo = new THREE.RingGeometry(0.8, 1, 32);
       const ringMat = new THREE.MeshBasicMaterial({
@@ -295,6 +668,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       });
       const ring = new THREE.Mesh(ringGeo, ringMat);
       ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.02;
       group.add(ring);
 
       const cylGeo = new THREE.CylinderGeometry(0.08, 0.08, 2.5, 8);
@@ -328,15 +702,26 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     this.tickPlayback();
 
+    // Idle camera orbit
+    const now = Date.now();
+    if (now - this.lastInteractionTime > 8000) {
+      this.cameraTheta += 0.0005;
+      this.updateCameraPosition();
+    }
+
+    // Update heatmap
+    this.updateHeatmap();
+
     if (this.starField) this.starField.rotation.y += 0.0001;
-    if (this.terrainGrid) this.terrainGrid.rotation.z -= 0.0002;
 
     if (this.stationMeshes) {
       this.stationMeshes.forEach(sm => {
         sm.pulseVal += 0.04;
         const scale = 1 + Math.sin(sm.pulseVal) * 0.1;
-        sm.mesh.children[0].scale.set(scale, scale, 1);
-        sm.mesh.children[0].material.opacity = 0.5 + Math.sin(sm.pulseVal) * 0.3;
+        if (sm.mesh.children && sm.mesh.children[0]) {
+          sm.mesh.children[0].scale.set(scale, scale, 1);
+          sm.mesh.children[0].material.opacity = 0.5 + Math.sin(sm.pulseVal) * 0.3;
+        }
       });
     }
 
@@ -623,8 +1008,9 @@ class WeatherFlowLightningCard extends HTMLElement {
   triggerStrikeAnimation(x, z) {
     if (!this.initialized) return;
 
-    const targetPos = new THREE.Vector3(x, 0, z);
-    const startPos = new THREE.Vector3(x + (Math.random() - 0.5) * 4, 18, z + (Math.random() - 0.5) * 4);
+    const terrainY = this.getTerrainHeight(x, z);
+    const targetPos = new THREE.Vector3(x, terrainY, z);
+    const startPos = new THREE.Vector3(x + (Math.random() - 0.5) * 4, terrainY + 18, z + (Math.random() - 0.5) * 4);
 
     // Lightning Bolt Lines
     const lines = [];
@@ -644,6 +1030,20 @@ class WeatherFlowLightningCard extends HTMLElement {
       lines.push(line);
     }
 
+    // Volumetric Glow Sprite
+    const spriteMat = new THREE.SpriteMaterial({
+      map: this.glowTexture,
+      color: 0xffffff,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const glowSprite = new THREE.Sprite(spriteMat);
+    glowSprite.position.copy(targetPos);
+    glowSprite.position.y += 0.1; // Float slightly above terrain
+    glowSprite.scale.set(0.1, 0.1, 1);
+    this.strikeLayer.add(glowSprite);
+
     // Expanding Wave Ring
     const waveGeo = new THREE.RingGeometry(0.1, 0.2, 32);
     const waveMat = new THREE.MeshBasicMaterial({
@@ -654,13 +1054,15 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
     const wave = new THREE.Mesh(waveGeo, waveMat);
     wave.position.copy(targetPos);
+    wave.position.y += 0.05; // Float slightly above terrain
     wave.rotation.x = -Math.PI / 2;
     this.strikeLayer.add(wave);
 
     // Trilateration domes/circles
     const domes = [];
     this.stations.forEach(st => {
-      const stPos = new THREE.Vector3(st.x, 0, st.z);
+      const stY = this.getTerrainHeight(st.x, st.z);
+      const stPos = new THREE.Vector3(st.x, stY, st.z);
       const dist = stPos.distanceTo(targetPos);
       const ringGeo = new THREE.RingGeometry(dist - 0.08, dist + 0.08, 64);
       const ringMat = new THREE.MeshBasicMaterial({
@@ -671,6 +1073,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       });
       const ring = new THREE.Mesh(ringGeo, ringMat);
       ring.position.copy(stPos);
+      ring.position.y += 0.05; // Float slightly above terrain
       ring.rotation.x = -Math.PI / 2;
       this.strikeLayer.add(ring);
       domes.push({ mesh: ring, targetOpacity: 0.5 });
@@ -689,6 +1092,17 @@ class WeatherFlowLightningCard extends HTMLElement {
         lines.forEach(l => { l.material.opacity = 1.0 - (frac - 0.2) / 0.3; });
       } else {
         lines.forEach(l => { if (l.parent) this.strikeLayer.remove(l); });
+      }
+
+      if (frac < 0.6) {
+        const spriteScale = frac * 12.0;
+        glowSprite.scale.set(spriteScale, spriteScale, 1);
+        glowSprite.material.opacity = 1.0 * (1.0 - frac / 0.6);
+      } else {
+        if (glowSprite.parent) {
+          this.strikeLayer.remove(glowSprite);
+          glowSprite.material.dispose();
+        }
       }
 
       if (frac < 0.8) {
@@ -725,16 +1139,22 @@ class WeatherFlowLightningCard extends HTMLElement {
     const stationsSensorId = Object.keys(hass.states).find(
       key => key.startsWith('sensor.') && key.endsWith('_stations') &&
              hass.states[key].attributes.stations !== undefined &&
-             hass.states[key].attributes.icon === "mdi:lightning-bolt" // or another way to distinguish
+             hass.states[key].attributes.icon === "mdi:lightning-bolt"
     ) || Object.keys(hass.states).find(key => key.startsWith('sensor.') && hass.states[key].attributes.stations !== undefined);
 
     if (stationsSensorId) {
+      // Process elevation grid updates first
+      const elevationGrid = hass.states[stationsSensorId].attributes.elevation_grid;
+      if (elevationGrid && JSON.stringify(elevationGrid) !== JSON.stringify(this.elevationGrid)) {
+        this.updateTerrainGeometry(elevationGrid);
+      }
+
       const stationsAttr = hass.states[stationsSensorId].attributes.stations;
 
       if (Array.isArray(stationsAttr)) {
         let stationsChanged = false;
 
-        // We need to compare existing stations to new ones
+        // Compare existing stations to new ones
         if (this.stations.length !== stationsAttr.length) {
           stationsChanged = true;
         } else {

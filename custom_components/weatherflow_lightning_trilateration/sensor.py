@@ -69,7 +69,10 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
                     }
                 )
 
-        attrs = {"stations": stations_data}
+        attrs = {
+            "stations": stations_data,
+            "elevation_grid": self._coordinator.elevation_grid,
+        }
         _LOGGER.debug("WeatherFlowTrilaterationSensor attributes queried: %s", attrs)
         return attrs
 

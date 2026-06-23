@@ -127,6 +127,7 @@ class TempestStrikeCoordinator:
         self.station_coords = {}
         self.device_to_station = {}
         self.device_ids = set()
+        self.elevation_grid = []
 
         self.primary_station = str(entry.data.get(CONF_PRIMARY_STATION, "")).strip()
         neighbor_raw = str(entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
@@ -563,6 +564,67 @@ class TempestStrikeCoordinator:
                     # Keep stations with unresolved coordinates for now so we can still try to listen
                     filtered_stations.append(station_id)
             self.all_stations = filtered_stations
+
+        # 7. Fetch the real terrain elevation grid centered at the primary station
+        try:
+            await self._async_fetch_elevation_grid()
+        except Exception as e:
+            _LOGGER.error("Failed to fetch elevation grid: %s", e)
+
+    async def _async_fetch_elevation_grid(self) -> None:
+        """Fetch real terrain elevation data for a grid around the primary station."""
+        primary_coords = self.station_coords.get(self.primary_station)
+        if not primary_coords:
+            primary_coords = self._get_station_coords(self.primary_station)
+
+        if not primary_coords:
+            _LOGGER.debug("Could not resolve primary coordinates for elevation grid")
+            return
+
+        ref_lat, ref_lon = primary_coords
+        
+        # Define grid dimensions: 15x15 points spanning 50km
+        grid_size = 15
+        span_km = 50.0
+        
+        # Calculate latitude and longitude ranges
+        lat_span = span_km / 111.1
+        cos_lat = math.cos(math.radians(ref_lat))
+        lon_span = span_km / (111.1 * cos_lat) if cos_lat > 0 else span_km / 111.1
+
+        lats = []
+        lons = []
+        for i in range(grid_size):
+            lat = ref_lat - (lat_span / 2) + (lat_span * i / (grid_size - 1))
+            for j in range(grid_size):
+                lon = ref_lon - (lon_span / 2) + (lon_span * j / (grid_size - 1))
+                lats.append(f"{lat:.5f}")
+                lons.append(f"{lon:.5f}")
+
+        url = "https://api.open-meteo.com/v1/elevation"
+        params = {
+            "latitude": ",".join(lats),
+            "longitude": ",".join(lons)
+        }
+
+        try:
+            session = async_get_clientsession(self.hass)
+            _LOGGER.debug("Querying Open-Meteo elevation grid api...")
+            async with session.get(url, params=params, timeout=15) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    self.elevation_grid = data.get("elevation", [])
+                    _LOGGER.info(
+                        "Successfully fetched %d elevation points for the terrain grid",
+                        len(self.elevation_grid),
+                    )
+                else:
+                    _LOGGER.warning(
+                        "Failed to query Open-Meteo elevation API: HTTP %d",
+                        response.status,
+                    )
+        except Exception as e:
+            _LOGGER.error("Error fetching elevation grid: %s", e)
 
     async def async_stop(self) -> None:
         """Stop the WebSocket listener task."""
