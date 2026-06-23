@@ -434,6 +434,35 @@ class TempestStrikeCoordinator:
             self.all_stations,
         )
 
+        # 6. Filter out any stations that are too far from the primary station (e.g. > 100 km)
+        primary_coords = self.station_coords.get(self.primary_station)
+        if not primary_coords:
+            primary_coords = self._get_station_coords(self.primary_station)
+
+        if primary_coords:
+            ref_lat, ref_lon = primary_coords
+            filtered_stations = []
+            for station_id in self.all_stations:
+                coords = self.station_coords.get(station_id)
+                if not coords:
+                    coords = self._get_station_coords(station_id)
+
+                if coords:
+                    lat, lon = coords
+                    dist = self._calculate_distance(ref_lat, ref_lon, lat, lon)
+                    if dist <= 100.0:
+                        filtered_stations.append(station_id)
+                    else:
+                        _LOGGER.warning(
+                            "Filtering out station %s because it is too far (%.1f km) from primary station",
+                            station_id,
+                            dist,
+                        )
+                else:
+                    # Keep stations with unresolved coordinates for now so we can still try to listen
+                    filtered_stations.append(station_id)
+            self.all_stations = filtered_stations
+
     async def async_stop(self) -> None:
         """Stop the WebSocket listener task."""
         self._running = False
@@ -564,6 +593,26 @@ class TempestStrikeCoordinator:
             offset_lat = dist_offset * math.sin(angle)
             offset_lon = dist_offset * math.cos(angle)
             return ref_lat + offset_lat, ref_lon + offset_lon
+
+    def _calculate_distance(
+        self, lat1: float, lon1: float, lat2: float, lon2: float
+    ) -> float:
+        """Calculate the great-circle distance between two coordinates (in km)."""
+        R = 6371.0
+        lat1_rad = math.radians(lat1)
+        lon1_rad = math.radians(lon1)
+        lat2_rad = math.radians(lat2)
+        lon2_rad = math.radians(lon2)
+
+        dlon = lon2_rad - lon1_rad
+        dlat = lat2_rad - lat1_rad
+
+        a = (
+            math.sin(dlat / 2) ** 2
+            + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
+        )
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return R * c
 
     def _process_incoming_message(self, message_data: dict) -> None:
         """Process an incoming WebSocket message."""
