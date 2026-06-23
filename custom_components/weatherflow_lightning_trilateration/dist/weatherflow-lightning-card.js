@@ -57,6 +57,29 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
   }
 
+  disconnectedCallback() {
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+    }
+    if (this._mouseupHandler) {
+      window.removeEventListener('mouseup', this._mouseupHandler);
+    }
+  }
+
+  updateCameraPosition() {
+    this.cameraPhi = Math.max(0.1, Math.min(Math.PI / 2 - 0.05, this.cameraPhi));
+    this.zoomRadius = Math.max(10, Math.min(150, this.zoomRadius));
+
+    const x = this.zoomRadius * Math.sin(this.cameraPhi) * Math.sin(this.cameraTheta);
+    const y = this.zoomRadius * Math.cos(this.cameraPhi);
+    const z = this.zoomRadius * Math.sin(this.cameraPhi) * Math.cos(this.cameraTheta);
+
+    if (this.camera) {
+      this.camera.position.set(x, y, z);
+      this.camera.lookAt(0, 0, 0);
+    }
+  }
+
   initVisualizer() {
     if (this.initialized) return;
     this.initialized = true;
@@ -85,6 +108,9 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.container.style.height = height;
     }
     this.container.style.overflow = 'hidden';
+    this.container.style.cursor = 'grab';
+    this.container.style.userSelect = 'none';
+    this.container.style.webkitUserSelect = 'none';
     this.wrapper.appendChild(this.container);
 
     this.createPlaybackControls();
@@ -95,14 +121,94 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     const aspect = this.container.clientWidth / this.container.clientHeight;
     this.camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 1000);
-    this.camera.position.set(0, 15, 30);
-    this.camera.lookAt(0, 0, 0);
+    
+    // Custom camera controls setup
+    this.zoomRadius = 33.54;
+    this.cameraTheta = 0.0;
+    this.cameraPhi = Math.atan2(30, 15);
+    this.updateCameraPosition();
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
     this.renderer.setClearColor(0x02040a, 1);
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
     this.container.appendChild(this.renderer.domElement);
+
+    // Add mouse & touch event listeners for rotation/zoom
+    let isDragging = false;
+    let previousMousePosition = { x: 0, y: 0 };
+
+    this.container.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      this.container.style.cursor = 'grabbing';
+      previousMousePosition = { x: e.clientX, y: e.clientY };
+    });
+
+    this.container.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const deltaX = e.clientX - previousMousePosition.x;
+      const deltaY = e.clientY - previousMousePosition.y;
+
+      this.cameraTheta -= deltaX * 0.005;
+      this.cameraPhi += deltaY * 0.005;
+      this.updateCameraPosition();
+
+      previousMousePosition = { x: e.clientX, y: e.clientY };
+    });
+
+    this._mouseupHandler = () => {
+      isDragging = false;
+      this.container.style.cursor = 'grab';
+    };
+    window.addEventListener('mouseup', this._mouseupHandler);
+
+    this.container.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this.zoomRadius += e.deltaY * 0.02;
+      this.updateCameraPosition();
+    }, { passive: false });
+
+    let touchStartDist = 0;
+
+    this.container.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        isDragging = true;
+        previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      } else if (e.touches.length === 2) {
+        isDragging = false;
+        touchStartDist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+      }
+    });
+
+    this.container.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1 && isDragging) {
+        const deltaX = e.touches[0].clientX - previousMousePosition.x;
+        const deltaY = e.touches[0].clientY - previousMousePosition.y;
+
+        this.cameraTheta -= deltaX * 0.007;
+        this.cameraPhi += deltaY * 0.007;
+        this.updateCameraPosition();
+
+        previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      } else if (e.touches.length === 2) {
+        e.preventDefault();
+        const dist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        const deltaDist = dist - touchStartDist;
+        this.zoomRadius -= deltaDist * 0.15;
+        this.updateCameraPosition();
+        touchStartDist = dist;
+      }
+    }, { passive: false });
+
+    this.container.addEventListener('touchend', () => {
+      isDragging = false;
+    });
 
     // Add elements
     this.addStaticElements();
