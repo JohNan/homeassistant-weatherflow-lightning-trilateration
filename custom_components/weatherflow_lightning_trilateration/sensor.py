@@ -72,6 +72,10 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
         attrs = {
             "stations": stations_data,
             "elevation_grid": self._coordinator.elevation_grid,
+            "wind_speed": self._coordinator.wind_speed,
+            "wind_direction": self._coordinator.wind_direction,
+            "solar_radiation": self._coordinator.solar_radiation,
+            "rain_rate": self._coordinator.rain_rate,
         }
         _LOGGER.debug("WeatherFlowTrilaterationSensor attributes queried: %s", attrs)
         return attrs
@@ -79,6 +83,11 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         """Call when entity is added to hass."""
         _LOGGER.debug("WeatherFlowTrilaterationSensor successfully added to HASS: unique_id=%s", self.unique_id)
+        self._coordinator.async_add_listener(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Call when entity will be removed from HASS."""
+        self._coordinator.async_remove_listener(self.async_write_ha_state)
 
     async def async_update(self) -> None:
         """Update the sensor."""

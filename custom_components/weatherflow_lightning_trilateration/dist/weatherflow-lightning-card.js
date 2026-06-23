@@ -25,6 +25,14 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.heatGeo = null;
     this.lastRefLat = null;
     this.lastRefLon = null;
+    this.windSpeed = 0.0;
+    this.windDirection = 0.0;
+    this.solarRadiation = 1000.0;
+    this.rainRate = 0.0;
+    this.stormArrow = null;
+    this.rainParticles = null;
+    this.windParticles = null;
+    this.lastFrameTime = null;
   }
 
   static getConfigElement() {
@@ -50,6 +58,8 @@ class WeatherFlowLightningCard extends HTMLElement {
       show_heatmap: true,
       auto_orbit: true,
       zoom_level: 18.0,
+      show_weather: true,
+      show_trend: true,
       ...config
     };
     if (this.container) {
@@ -72,6 +82,14 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
     if (this.rangeRingsGroup) {
       this.rangeRingsGroup.visible = this.config.show_rings !== false;
+    }
+    if (this.config.show_trend === false && this.stormArrow) {
+      this.scene.remove(this.stormArrow);
+      this.stormArrow = null;
+    }
+    if (this.config.show_weather === false) {
+      if (this.rainParticles) this.rainParticles.visible = false;
+      if (this.windParticles) this.windParticles.visible = false;
     }
     
     if (oldConfig.show_map !== this.config.show_map) {
@@ -303,6 +321,8 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     // Add elements
     this.addStaticElements();
+    this.initWeatherSystem();
+    this.updateDayNightEngine();
     this.addWeatherStations();
 
     // Generate default procedural terrain
@@ -767,12 +787,12 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   addStaticElements() {
     // Ambient light
-    const ambientLight = new THREE.AmbientLight(0x0f172a, 1.5);
-    this.scene.add(ambientLight);
+    this.ambientLight = new THREE.AmbientLight(0x0f172a, 1.5);
+    this.scene.add(this.ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0x38bdf8, 1);
-    dirLight.position.set(5, 10, 7);
-    this.scene.add(dirLight);
+    this.dirLight = new THREE.DirectionalLight(0x38bdf8, 1);
+    this.dirLight.position.set(5, 10, 7);
+    this.scene.add(this.dirLight);
 
     // Starfield
     const starsGeo = new THREE.BufferGeometry();
@@ -877,13 +897,251 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
   }
 
+  initWeatherSystem() {
+    // Rain Particles
+    const rainCount = 800;
+    const rainGeo = new THREE.BufferGeometry();
+    const rainPositions = new Float32Array(rainCount * 3);
+    for (let i = 0; i < rainCount * 3; i += 3) {
+      rainPositions[i] = (Math.random() - 0.5) * 40;
+      rainPositions[i + 1] = Math.random() * 20;
+      rainPositions[i + 2] = (Math.random() - 0.5) * 40;
+    }
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
+    
+    const rainMat = new THREE.PointsMaterial({
+      color: 0x93c5fd,
+      size: 0.15,
+      transparent: true,
+      opacity: 0.6,
+      depthWrite: false
+    });
+    this.rainParticles = new THREE.Points(rainGeo, rainMat);
+    this.scene.add(this.rainParticles);
+    this.rainParticles.visible = false;
+
+    // Wind Particles
+    const windCount = 300;
+    const windGeo = new THREE.BufferGeometry();
+    const windPositions = new Float32Array(windCount * 3);
+    for (let i = 0; i < windCount * 3; i += 3) {
+      windPositions[i] = (Math.random() - 0.5) * 40;
+      windPositions[i + 1] = Math.random() * 8;
+      windPositions[i + 2] = (Math.random() - 0.5) * 40;
+    }
+    windGeo.setAttribute('position', new THREE.BufferAttribute(windPositions, 3));
+
+    const windMat = new THREE.PointsMaterial({
+      color: 0x38bdf8,
+      size: 0.1,
+      transparent: true,
+      opacity: 0.3,
+      depthWrite: false
+    });
+    this.windParticles = new THREE.Points(windGeo, windMat);
+    this.scene.add(this.windParticles);
+    this.windParticles.visible = false;
+  }
+
+  updateWeatherSystem(deltaTime) {
+    if (!this.initialized) return;
+
+    const showWeather = this.config.show_weather !== false;
+    const showRain = showWeather && (this.rainRate > 0);
+    const showWind = showWeather && (this.windSpeed > 0);
+
+    if (this.rainParticles) {
+      this.rainParticles.visible = showRain;
+      if (showRain) {
+        const posAttr = this.rainParticles.geometry.attributes.position;
+        const count = posAttr.count;
+        
+        const windRad = (this.windDirection || 0) * Math.PI / 180.0;
+        const driftX = -Math.sin(windRad) * (this.windSpeed || 0) * 0.1;
+        const driftZ = -Math.cos(windRad) * (this.windSpeed || 0) * 0.1;
+        const fallSpeed = 10.0 + Math.min(20.0, this.rainRate * 2.0);
+
+        for (let i = 0; i < count; i++) {
+          let x = posAttr.getX(i);
+          let y = posAttr.getY(i);
+          let z = posAttr.getZ(i);
+
+          y -= fallSpeed * deltaTime;
+          x += driftX * deltaTime;
+          z += driftZ * deltaTime;
+
+          const terrainY = this.getTerrainHeight(x, z);
+          if (y < terrainY || y < 0) {
+            y = 20 + Math.random() * 2;
+            x = (Math.random() - 0.5) * 40;
+            z = (Math.random() - 0.5) * 40;
+          }
+
+          posAttr.setXYZ(i, x, y, z);
+        }
+        posAttr.needsUpdate = true;
+      }
+    }
+
+    if (this.windParticles) {
+      this.windParticles.visible = showWind;
+      if (showWind) {
+        const posAttr = this.windParticles.geometry.attributes.position;
+        const count = posAttr.count;
+
+        const windRad = (this.windDirection || 0) * Math.PI / 180.0;
+        const driftX = -Math.sin(windRad) * (this.windSpeed || 0) * 0.5;
+        const driftZ = -Math.cos(windRad) * (this.windSpeed || 0) * 0.5;
+
+        for (let i = 0; i < count; i++) {
+          let x = posAttr.getX(i);
+          let y = posAttr.getY(i);
+          let z = posAttr.getZ(i);
+
+          x += driftX * deltaTime;
+          z += driftZ * deltaTime;
+          y += Math.sin(x * 0.5 + z * 0.5) * 0.02;
+
+          if (x < -20 || x > 20 || z < -20 || z > 20) {
+            if (Math.abs(driftX) > Math.abs(driftZ)) {
+              x = driftX > 0 ? -20 : 20;
+              z = (Math.random() - 0.5) * 40;
+            } else {
+              x = (Math.random() - 0.5) * 40;
+              z = driftZ > 0 ? -20 : 20;
+            }
+            y = Math.random() * 8;
+          }
+
+          posAttr.setXYZ(i, x, y, z);
+        }
+        posAttr.needsUpdate = true;
+      }
+    }
+  }
+
+  updateDayNightEngine() {
+    if (!this.initialized || !this.scene) return;
+    
+    const rad = this.solarRadiation !== undefined ? this.solarRadiation : 1000.0;
+    const factor = Math.max(0.0, Math.min(1.0, rad / 1000.0));
+
+    if (this.ambientLight) {
+      const nightColor = new THREE.Color(0x0a0f1d);
+      const dayColor = new THREE.Color(0xffffff);
+      this.ambientLight.color.copy(nightColor).lerp(dayColor, factor);
+      this.ambientLight.intensity = 0.3 + factor * 1.2;
+    }
+
+    if (this.dirLight) {
+      this.dirLight.intensity = factor * 1.5;
+      const angle = (factor * Math.PI) - (Math.PI / 2);
+      const x = 15 * Math.sin(angle);
+      const y = 15 * Math.cos(angle);
+      const z = 7;
+      this.dirLight.position.set(x, y, z);
+      
+      const sunColor = new THREE.Color(0xffa500);
+      const noonColor = new THREE.Color(0xfef08a);
+      this.dirLight.color.copy(sunColor).lerp(noonColor, factor);
+    }
+
+    if (this.starField && this.starField.material) {
+      this.starField.material.opacity = 0.8 * (1.0 - factor);
+      this.starField.visible = this.starField.material.opacity > 0.01;
+    }
+
+    const nightBg = new THREE.Color(0x02040a);
+    const dayBg = new THREE.Color(0x081325);
+    const bg = nightBg.clone().lerp(dayBg, factor);
+    
+    if (this.renderer) {
+      this.renderer.setClearColor(bg, 1);
+    }
+    if (this.scene.fog) {
+      this.scene.fog.color.copy(bg);
+    }
+  }
+
+  updateStormTrendVector() {
+    if (!this.initialized || !this.scene) return;
+    
+    if (this.stormArrow) {
+      this.scene.remove(this.stormArrow);
+      if (this.stormArrow.line && this.stormArrow.line.geometry) this.stormArrow.line.geometry.dispose();
+      if (this.stormArrow.line && this.stormArrow.line.material) this.stormArrow.line.material.dispose();
+      if (this.stormArrow.cone && this.stormArrow.cone.geometry) this.stormArrow.cone.geometry.dispose();
+      if (this.stormArrow.cone && this.stormArrow.cone.material) this.stormArrow.cone.material.dispose();
+      this.stormArrow = null;
+    }
+
+    if (this.config.show_trend === false) return;
+    if (this.strikeHistory.length < 2) return;
+
+    const n = Math.min(this.strikeHistory.length, 10);
+    const recent = this.strikeHistory.slice(-n);
+    const t0 = recent[0].time;
+    let sumT = 0, sumX = 0, sumZ = 0, sumT2 = 0, sumTX = 0, sumTZ = 0;
+    
+    recent.forEach(s => {
+      const t = (s.time - t0) / 1000.0;
+      sumT += t;
+      sumX += s.x;
+      sumZ += s.z;
+      sumT2 += t * t;
+      sumTX += t * s.x;
+      sumTZ += t * s.z;
+    });
+
+    const denom = n * sumT2 - sumT * sumT;
+    let bx = 0;
+    let bz = 0;
+    if (denom !== 0) {
+      bx = (n * sumTX - sumT * sumX) / denom;
+      bz = (n * sumTZ - sumT * sumZ) / denom;
+    }
+
+    const speedKms = Math.sqrt(bx * bx + bz * bz);
+    const speedKmh = speedKms * 3600.0;
+
+    if (speedKms > 0.001) {
+      const dirX = bx / speedKms;
+      const dirZ = bz / speedKms;
+
+      const latest = recent[recent.length - 1];
+      const posX = latest.x;
+      const posZ = latest.z;
+      const posY = this.getTerrainHeight(posX, posZ) + 0.2;
+
+      const dir = new THREE.Vector3(dirX, 0, dirZ).normalize();
+      const origin = new THREE.Vector3(posX, posY, posZ);
+      const length = Math.max(3.0, Math.min(10.0, 3.0 + speedKmh * 0.1));
+      
+      this.stormArrow = new THREE.ArrowHelper(dir, origin, length, 0xffaa00, 1.2, 0.6);
+      
+      if (this.stormArrow.line && this.stormArrow.line.material) {
+        this.stormArrow.line.material.linewidth = 3;
+      }
+      if (this.stormArrow.cone && this.stormArrow.cone.material) {
+        this.stormArrow.cone.material.emissive = new THREE.Color(0xff5500);
+      }
+      
+      this.scene.add(this.stormArrow);
+    }
+  }
+
   animate() {
     requestAnimationFrame(() => this.animate());
 
     this.tickPlayback();
 
-    // Idle camera orbit
     const now = Date.now();
+    const deltaTime = this.lastFrameTime ? (now - this.lastFrameTime) / 1000.0 : 0.016;
+    this.lastFrameTime = now;
+
+    this.updateWeatherSystem(deltaTime);
+
+    // Idle camera orbit
     if (this.config.auto_orbit !== false && (now - this.lastInteractionTime > 8000)) {
       this.cameraTheta += 0.0005;
       this.updateCameraPosition();
@@ -1348,7 +1606,15 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.updateTerrainGeometry(elevationGrid);
       }
 
-      const stationsAttr = hass.states[stationsSensorId].attributes.stations;
+      const attrs = hass.states[stationsSensorId].attributes;
+      this.windSpeed = attrs.wind_speed !== undefined ? parseFloat(attrs.wind_speed) : 0.0;
+      this.windDirection = attrs.wind_direction !== undefined ? parseFloat(attrs.wind_direction) : 0.0;
+      this.solarRadiation = attrs.solar_radiation !== undefined ? parseFloat(attrs.solar_radiation) : 1000.0;
+      this.rainRate = attrs.rain_rate !== undefined ? parseFloat(attrs.rain_rate) : 0.0;
+
+      this.updateDayNightEngine();
+
+      const stationsAttr = attrs.stations;
 
       if (Array.isArray(stationsAttr)) {
         let stationsChanged = false;
@@ -1468,6 +1734,8 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.knownStrikes.delete(id);
       }
     }
+    
+    this.updateStormTrendVector();
   }
 
   getCardSize() {

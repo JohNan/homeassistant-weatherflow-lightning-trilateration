@@ -56,6 +56,76 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             },
         )
 
+    # Register service for weather telemetry simulation
+    async def async_simulate_weather(service_call) -> None:
+        """Simulate weather conditions on the stations sensor."""
+        wind_speed = service_call.data.get("wind_speed")
+        wind_direction = service_call.data.get("wind_direction")
+        solar_radiation = service_call.data.get("solar_radiation")
+        rain_rate = service_call.data.get("rain_rate")
+
+        coordinator = None
+        for entry_id in list(hass.data[DOMAIN].keys()):
+            coordinator = hass.data[DOMAIN][entry_id]
+            break
+
+        if coordinator:
+            if wind_speed is not None:
+                coordinator.wind_speed = float(wind_speed)
+            if wind_direction is not None:
+                coordinator.wind_direction = float(wind_direction)
+            if solar_radiation is not None:
+                coordinator.solar_radiation = float(solar_radiation)
+            if rain_rate is not None:
+                coordinator.rain_rate = float(rain_rate)
+            coordinator.async_update_listeners()
+
+    # Register service for storm path simulation
+    async def async_simulate_storm(service_call) -> None:
+        """Simulate a moving storm path over time."""
+        strike_count = int(service_call.data.get("strike_count", 5))
+        speed_kmh = float(service_call.data.get("speed_kmh", 30.0))
+        direction_deg = float(service_call.data.get("direction_deg", 45.0))
+        interval_sec = int(service_call.data.get("interval_sec", 5))
+
+        async def run_storm():
+            ref_lat = hass.config.latitude
+            ref_lon = hass.config.longitude
+            R = 6371.0
+            
+            dir_rad = math.radians(direction_deg)
+            speed_kms = speed_kmh / 3600.0
+            
+            start_offset_km = -5.0
+            start_x = start_offset_km * math.sin(dir_rad)
+            start_y = start_offset_km * math.cos(dir_rad)
+            
+            for i in range(strike_count):
+                dt_sec = i * interval_sec
+                current_x = start_x + (speed_kms * dt_sec * math.sin(dir_rad))
+                current_y = start_y + (speed_kms * dt_sec * math.cos(dir_rad))
+                
+                cos_lat = math.cos(math.radians(ref_lat))
+                lat = ref_lat + (current_y / R) * (180.0 / math.pi)
+                lon = ref_lon + (current_x / (R * cos_lat)) * (180.0 / math.pi) if cos_lat > 0 else ref_lon
+                
+                lat += random.uniform(-0.01, 0.01)
+                lon += random.uniform(-0.01, 0.01)
+                
+                hass.bus.async_fire(
+                    EVENT_STRIKE_CALCULATED,
+                    {
+                        "latitude": float(lat),
+                        "longitude": float(lon),
+                    },
+                )
+                _LOGGER.info("Simulated storm strike %d/%d at coords: %f, %f", i + 1, strike_count, lat, lon)
+                
+                if i < strike_count - 1:
+                    await asyncio.sleep(interval_sec)
+
+        hass.async_create_background_task(run_storm(), "weatherflow_lightning_trilateration_storm_simulation")
+
     if not hass.services.has_service(DOMAIN, "simulate_strike"):
         hass.services.async_register(
             DOMAIN,
@@ -65,6 +135,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 {
                     vol.Optional("latitude"): cv.latitude,
                     vol.Optional("longitude"): cv.longitude,
+                }
+            ),
+        )
+
+    if not hass.services.has_service(DOMAIN, "simulate_weather"):
+        hass.services.async_register(
+            DOMAIN,
+            "simulate_weather",
+            async_simulate_weather,
+            schema=vol.Schema(
+                {
+                    vol.Optional("wind_speed"): vol.Coerce(float),
+                    vol.Optional("wind_direction"): vol.Coerce(float),
+                    vol.Optional("solar_radiation"): vol.Coerce(float),
+                    vol.Optional("rain_rate"): vol.Coerce(float),
+                }
+            ),
+        )
+
+    if not hass.services.has_service(DOMAIN, "simulate_storm"):
+        hass.services.async_register(
+            DOMAIN,
+            "simulate_storm",
+            async_simulate_storm,
+            schema=vol.Schema(
+                {
+                    vol.Optional("strike_count"): vol.Coerce(int),
+                    vol.Optional("speed_kmh"): vol.Coerce(float),
+                    vol.Optional("direction_deg"): vol.Coerce(float),
+                    vol.Optional("interval_sec"): vol.Coerce(int),
                 }
             ),
         )
@@ -128,6 +228,11 @@ class TempestStrikeCoordinator:
         self.device_to_station = {}
         self.device_ids = set()
         self.elevation_grid = []
+        self._listeners = []
+        self.wind_speed = 0.0
+        self.wind_direction = 0.0
+        self.solar_radiation = 1000.0
+        self.rain_rate = 0.0
 
         self.primary_station = str(entry.data.get(CONF_PRIMARY_STATION, "")).strip()
         neighbor_raw = str(entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
@@ -151,6 +256,20 @@ class TempestStrikeCoordinator:
 
         self._listener_task = None
         self._running = False
+
+    def async_add_listener(self, update_callback) -> None:
+        """Add a listener for coordinator state updates."""
+        self._listeners.append(update_callback)
+
+    def async_remove_listener(self, update_callback) -> None:
+        """Remove a listener."""
+        if update_callback in self._listeners:
+            self._listeners.remove(update_callback)
+
+    def async_update_listeners(self) -> None:
+        """Trigger update callbacks for all listeners."""
+        for update_callback in self._listeners:
+            update_callback()
 
     def start_websocket_listener(self) -> None:
         """Start the WebSocket listener task."""
@@ -781,6 +900,24 @@ class TempestStrikeCoordinator:
         """Process an incoming WebSocket message."""
         msg_type = message_data.get("type")
         _LOGGER.debug("Processing WebSocket message of type: %s", msg_type)
+
+        if msg_type == "obs_st":
+            obs = message_data.get("obs", [])
+            if obs and len(obs[0]) >= 18:
+                self.wind_speed = float(obs[0][2])
+                self.wind_direction = float(obs[0][4])
+                self.solar_radiation = float(obs[0][11])
+                self.rain_rate = float(obs[0][12])
+                _LOGGER.debug(
+                    "Parsed weather telemetry: wind_speed=%f, wind_direction=%f, solar_radiation=%f, rain_rate=%f",
+                    self.wind_speed,
+                    self.wind_direction,
+                    self.solar_radiation,
+                    self.rain_rate,
+                )
+                self.async_update_listeners()
+            return
+
         if msg_type != "evt_strike":
             return
 

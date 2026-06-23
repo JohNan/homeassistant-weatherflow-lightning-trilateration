@@ -24,3 +24,102 @@ simulate_strike:
           max: 180
           step: any
           mode: box
+
+simulate_weather:
+  name: Simulate Weather Telemetry
+  description: Simulate weather attributes (wind speed, direction, solar radiation, rain rate) on the Tempest coordinator and stations sensor.
+  fields:
+    wind_speed:
+      name: Wind Speed
+      description: Wind speed in m/s.
+      required: false
+      example: 5.5
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 0.1
+          mode: box
+    wind_direction:
+      name: Wind Direction
+      description: Wind direction in degrees (0-360).
+      required: false
+      example: 180.0
+      selector:
+        number:
+          min: 0
+          max: 360
+          step: 1.0
+          mode: box
+    solar_radiation:
+      name: Solar Radiation
+      description: Solar radiation in W/m^2 (0-1500).
+      required: false
+      example: 800.0
+      selector:
+        number:
+          min: 0
+          max: 1500
+          step: 1.0
+          mode: box
+    rain_rate:
+      name: Rain Rate
+      description: Rain rate in mm/hour.
+      required: false
+      example: 2.5
+      selector:
+        number:
+          min: 0
+          max: 200
+          step: 0.1
+          mode: box
+
+simulate_storm:
+  name: Simulate Moving Storm
+  description: Simulate a moving storm path that generates periodic lightning strikes along a linear trajectory over time.
+  fields:
+    strike_count:
+      name: Strike Count
+      description: Total number of strikes to generate.
+      required: false
+      example: 5
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          mode: box
+    speed_kmh:
+      name: Speed (km/h)
+      description: Movement speed of the storm center in km/h.
+      required: false
+      example: 30.0
+      selector:
+        number:
+          min: 1
+          max: 200
+          step: 0.5
+          mode: box
+    direction_deg:
+      name: Direction (degrees)
+      description: Bearing of storm movement in degrees (0-360, clockwise from North).
+      required: false
+      example: 45.0
+      selector:
+        number:
+          min: 0
+          max: 360
+          step: 1.0
+          mode: box
+    interval_sec:
+      name: Interval (seconds)
+      description: Delay in seconds between consecutive simulated strikes.
+      required: false
+      example: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
+          mode: box
+
