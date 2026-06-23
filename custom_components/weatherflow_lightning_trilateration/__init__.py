@@ -921,7 +921,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=2.0.0"
+    url = f"{base_url}?v=b2a5776"
 
     existing_item = None
     if hasattr(resources, "async_items"):
