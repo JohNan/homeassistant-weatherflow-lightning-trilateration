@@ -36,7 +36,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
     this.config = config;
     if (this.container) {
-      this.container.style.height = this.config.height || '350px';
+      const height = this.config.height || '350px';
+      if (height.endsWith('px')) {
+        const val = parseInt(height);
+        this.container.style.height = `${val - 40}px`;
+      } else {
+        this.container.style.height = height;
+      }
     }
   }
 
@@ -71,7 +77,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.container = document.createElement('div');
     this.container.style.position = 'relative';
     this.container.style.width = '100%';
-    this.container.style.height = this.config.height || '350px';
+    const height = this.config.height || '350px';
+    if (height.endsWith('px')) {
+      const val = parseInt(height);
+      this.container.style.height = `${val - 40}px`;
+    } else {
+      this.container.style.height = height;
+    }
     this.container.style.overflow = 'hidden';
     this.wrapper.appendChild(this.container);
 

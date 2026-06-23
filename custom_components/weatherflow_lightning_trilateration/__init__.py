@@ -701,21 +701,52 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
         if hasattr(resources, "async_load"):
             await resources.async_load()
 
-    url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
+    base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
+    url = f"{base_url}?v=2.0.0"
 
-    is_registered = False
+    existing_item = None
     if hasattr(resources, "async_items"):
         for item in resources.async_items():
-            if isinstance(item, dict) and item.get("url") == url:
-                is_registered = True
-                break
-            elif hasattr(item, "url") and getattr(item, "url") == url:
-                is_registered = True
+            item_url = (
+                item.get("url")
+                if isinstance(item, dict)
+                else getattr(item, "url", None)
+            )
+            if item_url and item_url.startswith(base_url):
+                existing_item = item
                 break
 
-    if is_registered:
-        _LOGGER.debug("Lovelace resource already registered: %s", url)
-        return
+    if existing_item:
+        existing_url = (
+            existing_item.get("url")
+            if isinstance(existing_item, dict)
+            else getattr(existing_item, "url", None)
+        )
+        if existing_url == url:
+            _LOGGER.debug("Lovelace resource already registered: %s", url)
+            return
+
+        # Update the existing resource URL to force reload
+        _LOGGER.info(
+            "Updating Lovelace resource from %s to %s to force reload",
+            existing_url,
+            url,
+        )
+        if hasattr(resources, "async_update_item"):
+            item_id = (
+                existing_item.get("id")
+                if isinstance(existing_item, dict)
+                else getattr(existing_item, "id", None)
+            )
+            if item_id:
+                await resources.async_update_item(
+                    item_id,
+                    {
+                        "res_type": "module",
+                        "url": url,
+                    },
+                )
+                return
 
     if hasattr(resources, "async_create_item"):
         await resources.async_create_item(
