@@ -128,7 +128,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.camera = new THREE.PerspectiveCamera(60, aspect, 0.1, 1000);
     
     // Custom camera controls setup
-    this.zoomRadius = 33.54;
+    this.zoomRadius = 18.0;
     this.cameraTheta = 0.0;
     this.cameraPhi = Math.atan2(30, 15);
     this.updateCameraPosition();
@@ -258,6 +258,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     // Add elements
     this.addStaticElements();
     this.addWeatherStations();
+
+    // Generate default procedural terrain
+    this.generateProceduralTerrain();
 
     this.strikeLayer = new THREE.Group();
     this.scene.add(this.strikeLayer);
@@ -436,8 +439,53 @@ class WeatherFlowLightningCard extends HTMLElement {
     return (rawElev - refElevation) * scaleFactor;
   }
 
+  generateProceduralTerrain() {
+    this.elevationGrid = [];
+    const centerIndex = 7 * 15 + 7;
+    
+    for (let i = 0; i < 15; i++) {
+      const x = i - 7;
+      for (let j = 0; j < 15; j++) {
+        const y = j - 7;
+        const dist = Math.sqrt(x*x + y*y);
+        let elev = 80 + Math.sin(x * 0.4) * Math.cos(y * 0.4) * 45;
+        elev += Math.sin(dist * 0.8) * 15;
+        if (i === 7 && j === 7) {
+          elev = 100;
+        } else {
+          const weight = Math.min(1.0, dist / 3.0);
+          elev = 100 * (1.0 - weight) + elev * weight;
+        }
+        this.elevationGrid.push(elev);
+      }
+    }
+
+    const posAttr = this.terrainGeo.attributes.position;
+    const refElevation = 100;
+    const scaleFactor = 1.5 / 1250.0;
+
+    for (let r = 0; r <= 14; r++) {
+      const i = 14 - r;
+      for (let c = 0; c <= 14; c++) {
+        const j = c;
+        const vertexIndex = r * 15 + c;
+        const rawElev = this.elevationGrid[i * 15 + j] || 0;
+        const relElev = (rawElev - refElevation) * scaleFactor;
+        posAttr.setZ(vertexIndex, relElev);
+      }
+    }
+    posAttr.needsUpdate = true;
+    this.terrainGeo.computeVertexNormals();
+
+    this.updateStationHeights();
+    this.updateRangeRings();
+  }
+
   updateTerrainGeometry(elevationGrid) {
-    if (!elevationGrid || elevationGrid.length !== 225) return;
+    if (!elevationGrid || elevationGrid.length !== 225) {
+      this.generateProceduralTerrain();
+      return;
+    }
     this.elevationGrid = elevationGrid;
     
     const posAttr = this.terrainGeo.attributes.position;
