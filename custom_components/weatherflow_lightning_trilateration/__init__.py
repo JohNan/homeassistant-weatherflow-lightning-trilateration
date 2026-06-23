@@ -126,6 +126,7 @@ class TempestStrikeCoordinator:
         self.strike_buffer = {}
         self.station_coords = {}
         self.device_to_station = {}
+        self.device_ids = set()
 
         self.primary_station = str(entry.data.get(CONF_PRIMARY_STATION, "")).strip()
         neighbor_raw = str(entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
@@ -167,7 +168,7 @@ class TempestStrikeCoordinator:
         )
 
     def _detect_local_stations(self) -> list[str]:
-        """Detect local weather station/device IDs from official integrations."""
+        """Detect local weather station IDs from official integrations."""
         detected = []
         target_domains = {
             "weatherflow",
@@ -176,36 +177,15 @@ class TempestStrikeCoordinator:
             "weatherflow_udp",
         }
 
-        # 1. Query Config Entries
+        # Query Config Entries
         for domain in target_domains:
             for entry in self.hass.config_entries.async_entries(domain):
-                for key in ("station_id", "station", "device_id", "device"):
+                for key in ("station_id", "station"):
                     val = entry.data.get(key) or entry.options.get(key)
                     if val:
                         val_str = str(val).strip()
-                        if val_str.isdigit():
+                        if val_str.isdigit() and len(val_str) <= 6 and not val_str.startswith("0"):
                             detected.append(val_str)
-
-        # 2. Query Device Registry
-        try:
-            device_registry = dr.async_get(self.hass)
-            for device_entry in device_registry.devices.values():
-                for entry_id in device_entry.config_entries:
-                    entry = self.hass.config_entries.async_get_entry(entry_id)
-                    if entry and entry.domain in target_domains:
-                        for identifier in device_entry.identifiers:
-                            if len(identifier) == 2 and identifier[0] == entry.domain:
-                                val = str(identifier[1])
-                                if val.isdigit():
-                                    detected.append(val)
-                                elif "-" in val:
-                                    parts = val.split("-")
-                                    if parts[-1].isdigit():
-                                        detected.append(parts[-1])
-        except Exception as e:
-            _LOGGER.warning(
-                "Error querying device registry for WeatherFlow stations: %s", e
-            )
 
         # Deduplicate and filter out empty strings
         return list(set(s for s in detected if s))
@@ -278,13 +258,91 @@ class TempestStrikeCoordinator:
 
         return detected
 
+    def _detect_api_token(self) -> str:
+        """Detect API token dynamically from other WeatherFlow config entries if missing."""
+        target_domains = {
+            "weatherflow",
+            "weatherflow_cloud",
+        }
+        for domain in target_domains:
+            for entry in self.hass.config_entries.async_entries(domain):
+                for key in ("api_token", "token"):
+                    val = entry.data.get(key) or entry.options.get(key)
+                    if val:
+                        val_str = str(val).strip()
+                        if val_str:
+                            _LOGGER.debug(
+                                "Found API token in config entry for domain %s: %s",
+                                domain,
+                                val_str[:4] + "..." if len(val_str) > 4 else "***",
+                            )
+                            return val_str
+        return ""
+
     async def _async_resolve_stations_metadata(self) -> None:
         """Resolve device IDs and coordinates for all configured and discovered stations."""
         session = async_get_clientsession(self.hass)
+        self.device_ids = set()
+
+        # If token is empty at runtime, try to dynamically detect it from other integrations
+        if not self.api_token:
+            self.api_token = self._detect_api_token()
+
         _LOGGER.debug(
             "Starting station metadata resolution. Configured stations/IDs: %s",
             self.all_stations,
         )
+
+        # 0. Offline resolution from other integrations' config entries and device registry
+        try:
+            device_registry = dr.async_get(self.hass)
+            target_domains = {
+                "weatherflow",
+                "weatherflow_cloud",
+                "weatherflow_forecast",
+                "weatherflow_udp",
+            }
+            for domain in target_domains:
+                for entry in self.hass.config_entries.async_entries(domain):
+                    station_id = None
+                    for key in ("station_id", "station"):
+                        val = entry.data.get(key) or entry.options.get(key)
+                        if val:
+                            val_str = str(val).strip()
+                            if val_str.isdigit():
+                                station_id = val_str
+                                break
+                    
+                    if not station_id:
+                        continue
+
+                    # Map devices registered under this config entry to the entry's station_id
+                    for device_entry in device_registry.devices.values():
+                        if entry.entry_id in device_entry.config_entries:
+                            for identifier in device_entry.identifiers:
+                                if len(identifier) == 2 and identifier[0] == entry.domain:
+                                    val = str(identifier[1]).strip()
+                                    self.device_to_station[val] = station_id
+                                    
+                                    # Strip prefix to map serial/ID without prefix
+                                    clean_val = val
+                                    for prefix in ("ST-", "HB-"):
+                                        if clean_val.startswith(prefix):
+                                            clean_val = clean_val[len(prefix):]
+                                    if clean_val:
+                                        self.device_to_station[clean_val] = station_id
+                                        
+                            if device_entry.name:
+                                name_str = str(device_entry.name).strip()
+                                self.device_to_station[name_str] = station_id
+                                clean_name = name_str
+                                for prefix in ("ST-", "HB-"):
+                                    if clean_name.startswith(prefix):
+                                        clean_name = clean_name[len(prefix):]
+                                if clean_name:
+                                    self.device_to_station[clean_name] = station_id
+        except Exception as e:
+            _LOGGER.debug("Error performing offline resolution from device registry: %s", e)
 
         # 1. If we have a token, fetch the user's own stations and devices list first.
         # This allows us to map device IDs/serial numbers (like 00172794) to their correct station IDs.
@@ -314,12 +372,19 @@ class TempestStrikeCoordinator:
                             for device in devices:
                                 dev_id = str(device.get("device_id", ""))
                                 serial = str(device.get("serial_number", ""))
+                                dev_type = device.get("device_type")
+
+                                is_hub = (dev_type == "HB" or serial.startswith("HB"))
+
                                 if dev_id and dev_id.isdigit():
                                     self.device_to_station[dev_id] = station_id
+                                    if not is_hub:
+                                        self.device_ids.add(dev_id)
                                     _LOGGER.debug(
-                                        "Mapped user device_id %s (serial %s) to station_id %s",
+                                        "Mapped user device_id %s (serial %s, type %s) to station_id %s",
                                         dev_id,
                                         serial,
+                                        dev_type,
                                         station_id,
                                     )
                                     if lat is not None and lon is not None:
@@ -333,6 +398,17 @@ class TempestStrikeCoordinator:
                                             float(lat),
                                             float(lon),
                                         )
+                                        # Map serial without prefix
+                                        clean_serial = serial
+                                        for prefix in ("ST-", "HB-"):
+                                            if clean_serial.startswith(prefix):
+                                                clean_serial = clean_serial[len(prefix):]
+                                        if clean_serial:
+                                            self.device_to_station[clean_serial] = station_id
+                                            self.station_coords[clean_serial] = (
+                                                float(lat),
+                                                float(lon),
+                                            )
                     else:
                         _LOGGER.debug(
                             "Failed to fetch user stations list: HTTP %d",
@@ -361,6 +437,7 @@ class TempestStrikeCoordinator:
             for station in self.all_stations:
                 if "," not in station and station.strip().isdigit():
                     self.device_to_station[station] = station
+                    self.device_ids.add(station)
             return
 
         for station_id in list(self.all_stations):
@@ -395,14 +472,29 @@ class TempestStrikeCoordinator:
                             for device in devices:
                                 dev_id = str(device.get("device_id", ""))
                                 dev_type = device.get("device_type")
+                                serial = str(device.get("serial_number", ""))
+
+                                is_hub = (dev_type == "HB" or serial.startswith("HB"))
+
                                 if dev_id and dev_id.isdigit():
                                     self.device_to_station[dev_id] = station_id
+                                    if not is_hub:
+                                        self.device_ids.add(dev_id)
                                     _LOGGER.debug(
                                         "Mapped device %s (%s) to station %s",
                                         dev_id,
                                         dev_type,
                                         station_id,
                                     )
+                                    if serial:
+                                        self.device_to_station[serial] = station_id
+                                        # Map serial without prefix
+                                        clean_serial = serial
+                                        for prefix in ("ST-", "HB-"):
+                                            if clean_serial.startswith(prefix):
+                                                clean_serial = clean_serial[len(prefix):]
+                                        if clean_serial:
+                                            self.device_to_station[clean_serial] = station_id
                     else:
                         # Log 404 as info since it could be an unresolved device ID or serial number
                         log_level = (
@@ -426,9 +518,18 @@ class TempestStrikeCoordinator:
             if "," not in station and station.strip().isdigit():
                 if station not in self.device_to_station.values():
                     self.device_to_station[station] = station
+                    self.device_ids.add(station)
 
         # 5. Deduplicate all_stations to remove duplicate station IDs after device-to-station resolution
         self.all_stations = list(dict.fromkeys(self.all_stations))
+        
+        # Also map self.primary_station and self.neighbor_stations if they were configured as device serials/IDs
+        if self.primary_station in self.device_to_station:
+            self.primary_station = self.device_to_station[self.primary_station]
+        self.neighbor_stations = list(dict.fromkeys([
+            self.device_to_station.get(s, s) for s in self.neighbor_stations
+        ]))
+
         _LOGGER.debug(
             "Deduplicated active stations list: %s",
             self.all_stations,
@@ -516,7 +617,7 @@ class TempestStrikeCoordinator:
                 )
                 async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
                     retry_delay = 5
-                    for device_id in self.device_to_station.keys():
+                    for device_id in self.device_ids:
                         # Skip subscription if it's a coordinate string or not numeric
                         if not device_id.strip().isdigit():
                             continue

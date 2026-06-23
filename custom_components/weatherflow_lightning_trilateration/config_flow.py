@@ -85,7 +85,7 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     def _detect_local_station(self) -> str | None:
-        """Detect local weather station/device ID from official integrations."""
+        """Detect local weather station ID from official integrations."""
         target_domains = {
             "weatherflow",
             "weatherflow_cloud",
@@ -96,31 +96,12 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # 1. Query Config Entries
         for domain in target_domains:
             for entry in self.hass.config_entries.async_entries(domain):
-                for key in ("station_id", "station", "device_id", "device"):
+                for key in ("station_id", "station"):
                     val = entry.data.get(key) or entry.options.get(key)
                     if val:
                         val_str = str(val).strip()
-                        if val_str.isdigit():
+                        if val_str.isdigit() and len(val_str) <= 6 and not val_str.startswith("0"):
                             return val_str
-
-        # 2. Query Device Registry
-        try:
-            device_registry = dr.async_get(self.hass)
-            for device_entry in device_registry.devices.values():
-                for entry_id in device_entry.config_entries:
-                    entry = self.hass.config_entries.async_get_entry(entry_id)
-                    if entry and entry.domain in target_domains:
-                        for identifier in device_entry.identifiers:
-                            if len(identifier) == 2 and identifier[0] == entry.domain:
-                                val = str(identifier[1])
-                                if val.isdigit():
-                                    return val
-                                elif "-" in val:
-                                    parts = val.split("-")
-                                    if parts[-1].isdigit():
-                                        return parts[-1]
-        except Exception:
-            pass
 
         return None
 
