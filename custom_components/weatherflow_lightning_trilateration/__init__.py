@@ -427,6 +427,13 @@ class TempestStrikeCoordinator:
                 if station not in self.device_to_station.values():
                     self.device_to_station[station] = station
 
+        # 5. Deduplicate all_stations to remove duplicate station IDs after device-to-station resolution
+        self.all_stations = list(dict.fromkeys(self.all_stations))
+        _LOGGER.debug(
+            "Deduplicated active stations list: %s",
+            self.all_stations,
+        )
+
     async def async_stop(self) -> None:
         """Stop the WebSocket listener task."""
         self._running = False
