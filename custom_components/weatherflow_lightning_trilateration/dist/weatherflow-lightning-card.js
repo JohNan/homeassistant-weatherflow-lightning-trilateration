@@ -29,7 +29,6 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.windDirection = 0.0;
     this.solarRadiation = 1000.0;
     this.rainRate = 0.0;
-    this.stormArrow = null;
     this.rainParticles = null;
     this.windParticles = null;
     this.lastFrameTime = null;
@@ -82,10 +81,6 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
     if (this.rangeRingsGroup) {
       this.rangeRingsGroup.visible = this.config.show_rings !== false;
-    }
-    if (this.config.show_trend === false && this.stormArrow) {
-      this.scene.remove(this.stormArrow);
-      this.stormArrow = null;
     }
     if (this.config.show_weather === false) {
       if (this.rainParticles) this.rainParticles.visible = false;
@@ -1027,10 +1022,10 @@ class WeatherFlowLightningCard extends HTMLElement {
     const factor = Math.max(0.0, Math.min(1.0, rad / 1000.0));
 
     if (this.ambientLight) {
-      const nightColor = new THREE.Color(0x0a0f1d);
+      const nightColor = new THREE.Color(0x334155);
       const dayColor = new THREE.Color(0xffffff);
       this.ambientLight.color.copy(nightColor).lerp(dayColor, factor);
-      this.ambientLight.intensity = 0.3 + factor * 1.2;
+      this.ambientLight.intensity = 0.8 + factor * 0.7;
     }
 
     if (this.dirLight) {
@@ -1060,73 +1055,6 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
     if (this.scene.fog) {
       this.scene.fog.color.copy(bg);
-    }
-  }
-
-  updateStormTrendVector() {
-    if (!this.initialized || !this.scene) return;
-    
-    if (this.stormArrow) {
-      this.scene.remove(this.stormArrow);
-      if (this.stormArrow.line && this.stormArrow.line.geometry) this.stormArrow.line.geometry.dispose();
-      if (this.stormArrow.line && this.stormArrow.line.material) this.stormArrow.line.material.dispose();
-      if (this.stormArrow.cone && this.stormArrow.cone.geometry) this.stormArrow.cone.geometry.dispose();
-      if (this.stormArrow.cone && this.stormArrow.cone.material) this.stormArrow.cone.material.dispose();
-      this.stormArrow = null;
-    }
-
-    if (this.config.show_trend === false) return;
-    if (this.strikeHistory.length < 2) return;
-
-    const n = Math.min(this.strikeHistory.length, 10);
-    const recent = this.strikeHistory.slice(-n);
-    const t0 = recent[0].time;
-    let sumT = 0, sumX = 0, sumZ = 0, sumT2 = 0, sumTX = 0, sumTZ = 0;
-    
-    recent.forEach(s => {
-      const t = (s.time - t0) / 1000.0;
-      sumT += t;
-      sumX += s.x;
-      sumZ += s.z;
-      sumT2 += t * t;
-      sumTX += t * s.x;
-      sumTZ += t * s.z;
-    });
-
-    const denom = n * sumT2 - sumT * sumT;
-    let bx = 0;
-    let bz = 0;
-    if (denom !== 0) {
-      bx = (n * sumTX - sumT * sumX) / denom;
-      bz = (n * sumTZ - sumT * sumZ) / denom;
-    }
-
-    const speedKms = Math.sqrt(bx * bx + bz * bz);
-    const speedKmh = speedKms * 3600.0;
-
-    if (speedKms > 0.001) {
-      const dirX = bx / speedKms;
-      const dirZ = bz / speedKms;
-
-      const latest = recent[recent.length - 1];
-      const posX = latest.x;
-      const posZ = latest.z;
-      const posY = this.getTerrainHeight(posX, posZ) + 0.2;
-
-      const dir = new THREE.Vector3(dirX, 0, dirZ).normalize();
-      const origin = new THREE.Vector3(posX, posY, posZ);
-      const length = Math.max(3.0, Math.min(10.0, 3.0 + speedKmh * 0.1));
-      
-      this.stormArrow = new THREE.ArrowHelper(dir, origin, length, 0xffaa00, 1.2, 0.6);
-      
-      if (this.stormArrow.line && this.stormArrow.line.material) {
-        this.stormArrow.line.material.linewidth = 3;
-      }
-      if (this.stormArrow.cone && this.stormArrow.cone.material) {
-        this.stormArrow.cone.material.emissive = new THREE.Color(0xff5500);
-      }
-      
-      this.scene.add(this.stormArrow);
     }
   }
 
@@ -1734,8 +1662,6 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.knownStrikes.delete(id);
       }
     }
-    
-    this.updateStormTrendVector();
   }
 
   getCardSize() {
