@@ -7,10 +7,11 @@ import math
 import os
 import random
 import ssl
+import time
 
 import voluptuous as vol
 import websockets
-from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.http import StaticPathConfig, HomeAssistantView
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
@@ -192,6 +193,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await _register_resource()
     else:
         hass.bus.async_listen_once("homeassistant_started", _register_resource)
+
+    # Register vector data HTTP view
+    hass.http.register_view(WeatherFlowVectorDataView(coordinator))
 
     _LOGGER.debug("Forwarding config entry setups to platforms: ['geo_location', 'sensor']")
     await hass.config_entries.async_forward_entry_setups(
@@ -690,6 +694,12 @@ class TempestStrikeCoordinator:
         except Exception as e:
             _LOGGER.error("Failed to fetch elevation grid: %s", e)
 
+        # 8. Fetch the vector geodata (waterbodies & forests) centered at the primary station
+        try:
+            await self._async_fetch_vector_data()
+        except Exception as e:
+            _LOGGER.error("Failed to fetch vector data: %s", e)
+
     async def _async_fetch_elevation_grid(self) -> None:
         """Fetch real terrain elevation data for a grid around the primary station."""
         primary_coords = self.station_coords.get(self.primary_station)
@@ -744,6 +754,99 @@ class TempestStrikeCoordinator:
                     )
         except Exception as e:
             _LOGGER.error("Error fetching elevation grid: %s", e)
+
+    async def _async_fetch_vector_data(self) -> None:
+        """Fetch lakes and forests from OSM Overpass API and cache them."""
+        primary_coords = self.station_coords.get(self.primary_station)
+        if not primary_coords:
+            primary_coords = self._get_station_coords(self.primary_station)
+
+        if not primary_coords:
+            _LOGGER.debug("Could not resolve primary coordinates for vector data")
+            return
+
+        ref_lat, ref_lon = primary_coords
+        cache_path = self.hass.config.path(
+            "custom_components/weatherflow_lightning_trilateration/vector_cache.json"
+        )
+
+        if os.path.exists(cache_path):
+            mtime = os.path.getmtime(cache_path)
+            if time.time() - mtime < 604800:  # 7 days
+                _LOGGER.info("Using cached OSM vector data")
+                return
+
+        radius = 15000
+        query = f"""
+        [out:json][timeout:30];
+        (
+          way["natural"="water"](around:{radius},{ref_lat},{ref_lon});
+          relation["natural"="water"](around:{radius},{ref_lat},{ref_lon});
+          way["landuse"="forest"](around:{radius},{ref_lat},{ref_lon});
+          relation["landuse"="forest"](around:{radius},{ref_lat},{ref_lon});
+        );
+        out geom;
+        """
+        url = "https://overpass-api.de/api/interpreter"
+        
+        try:
+            session = async_get_clientsession(self.hass)
+            _LOGGER.info("Querying OSM Overpass API for vector data (lakes & forests)...")
+            async with session.post(url, data={"data": query}, timeout=30) as response:
+                if response.status == 200:
+                    raw_data = await response.json()
+                    processed = self._process_vector_data(raw_data)
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    with open(cache_path, "w", encoding="utf-8") as f:
+                        json.dump(processed, f, ensure_ascii=False, indent=2)
+                    _LOGGER.info("Successfully fetched and cached vector data")
+                else:
+                    _LOGGER.warning("Failed to query Overpass API: HTTP %d", response.status)
+        except Exception as e:
+            _LOGGER.error("Failed to fetch vector data from Overpass: %s", e)
+
+    def _process_vector_data(self, raw_data) -> dict:
+        """Process and simplify OSM JSON Overpass geometry data."""
+        elements = raw_data.get("elements", [])
+        water_features = []
+        forest_features = []
+
+        for elem in elements:
+            tags = elem.get("tags", {})
+            geom = elem.get("geometry", [])
+            
+            if not geom or len(geom) < 3:
+                continue
+
+            is_water = tags.get("natural") == "water" or tags.get("waterway") == "riverbank"
+            is_forest = tags.get("landuse") == "forest" or tags.get("natural") == "wood"
+
+            if not (is_water or is_forest):
+                continue
+
+            coords = []
+            for pt in geom:
+                lat = pt.get("lat")
+                lon = pt.get("lon")
+                if lat is not None and lon is not None:
+                    coords.append([round(lat, 5), round(lon, 5)])
+
+            if len(coords) > 100:
+                step = len(coords) // 100 + 1
+                coords = coords[::step]
+                if coords and coords[0] != coords[-1]:
+                    coords.append(coords[0])
+
+            feature = {"coordinates": coords}
+            if is_water:
+                water_features.append(feature)
+            elif is_forest:
+                forest_features.append(feature)
+
+        return {
+            "water": water_features[:150],
+            "forest": forest_features[:150]
+        }
 
     async def async_stop(self) -> None:
         """Stop the WebSocket listener task."""
@@ -1112,3 +1215,29 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             }
         )
         _LOGGER.info("Registered Lovelace resource: %s", url)
+
+
+class WeatherFlowVectorDataView(HomeAssistantView):
+    """View to serve cached OSM vector data."""
+
+    url = "/api/weatherflow_lightning/vector_data"
+    name = "api:weatherflow_lightning:vector_data"
+    requires_auth = True
+
+    def __init__(self, coordinator: TempestStrikeCoordinator) -> None:
+        """Initialize the view."""
+        self.coordinator = coordinator
+
+    async def get(self, request):
+        """Handle GET request for vector data."""
+        cache_path = self.coordinator.hass.config.path(
+            "custom_components/weatherflow_lightning_trilateration/vector_cache.json"
+        )
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return self.json(data)
+            except Exception as e:
+                _LOGGER.error("Failed to read vector cache: %s", e)
+        return self.json({"water": [], "forest": []})

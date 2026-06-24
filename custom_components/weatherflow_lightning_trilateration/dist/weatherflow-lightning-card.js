@@ -61,6 +61,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       show_daynight: true,
       min_brightness: 0.8,
       elevation_scale: 1.5,
+      show_3d_features: false,
       ...config
     };
     if (this.container) {
@@ -120,6 +121,20 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.updateTerrainGeometry(this.elevationGrid);
       } else {
         this.generateProceduralTerrain();
+      }
+    }
+
+    if (oldConfig.show_3d_features !== this.config.show_3d_features) {
+      if (this.config.show_3d_features) {
+        if (this.lastRefLat && this.lastRefLon) {
+          this.loadVectorData(this.lastRefLat, this.lastRefLon);
+        }
+      } else {
+        if (this.features3DGroup) {
+          this.scene.remove(this.features3DGroup);
+          this.features3DGroup = null;
+        }
+        this.vectorDataLoaded = false;
       }
     }
   }
@@ -683,6 +698,131 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.terrainMesh.material.needsUpdate = true;
       }
     });
+  }
+
+  async loadVectorData(refLat, refLon) {
+    this.vectorDataLoading = true;
+    try {
+      const data = await this._hass.callApi("GET", "weatherflow_lightning/vector_data");
+      this.render3DFeatures(data, refLat, refLon);
+      this.vectorDataLoaded = true;
+    } catch (e) {
+      console.error("Failed to load 3D vector features:", e);
+    } finally {
+      this.vectorDataLoading = false;
+    }
+  }
+
+  render3DFeatures(data, refLat, refLon) {
+    if (!this.scene) return;
+    
+    if (this.features3DGroup) {
+      this.scene.remove(this.features3DGroup);
+      this.features3DGroup.traverse(child => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) {
+          if (Array.isArray(child.material)) {
+            child.material.forEach(m => m.dispose());
+          } else {
+            child.material.dispose();
+          }
+        }
+      });
+    }
+    
+    this.features3DGroup = new THREE.Group();
+    this.scene.add(this.features3DGroup);
+    
+    const R = 6371.0;
+    const cosLat = Math.cos(refLat * Math.PI / 180.0);
+    
+    // 1. Render Waterbodies (Lakes)
+    if (data.water && Array.isArray(data.water)) {
+      const waterMat = new THREE.MeshPhongMaterial({
+        color: 0x0284c7,
+        transparent: true,
+        opacity: 0.5,
+        side: THREE.DoubleSide,
+        flatShading: true
+      });
+      
+      data.water.forEach(poly => {
+        if (!poly.coordinates || poly.coordinates.length < 3) return;
+        
+        const shapePoints = [];
+        let avgY = 0;
+        let validPoints = 0;
+        
+        poly.coordinates.forEach(pt => {
+          const lat = pt[0];
+          const lon = pt[1];
+          const x = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
+          const z = R * (lat - refLat) * (Math.PI / 180.0);
+          
+          if (x < -20 || x > 20 || z < -20 || z > 20) return;
+          
+          shapePoints.push(new THREE.Vector2(x, -z));
+          avgY += this.getTerrainHeight(x, z);
+          validPoints++;
+        });
+        
+        if (shapePoints.length < 3) return;
+        avgY /= validPoints;
+        
+        const shape = new THREE.Shape(shapePoints);
+        const shapeGeo = new THREE.ShapeGeometry(shape);
+        const mesh = new THREE.Mesh(shapeGeo, waterMat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.y = avgY + 0.08;
+        this.features3DGroup.add(mesh);
+      });
+    }
+    
+    // 2. Render Forests (Instanced Pine Trees)
+    if (data.forest && Array.isArray(data.forest)) {
+      const treePositions = [];
+      
+      data.forest.forEach(poly => {
+        if (!poly.coordinates || poly.coordinates.length < 3) return;
+        
+        poly.coordinates.forEach((pt, idx) => {
+          if (idx % 4 !== 0) return;
+          
+          const lat = pt[0];
+          const lon = pt[1];
+          const x = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
+          const z = R * (lat - refLat) * (Math.PI / 180.0);
+          
+          if (x < -19.5 || x > 19.5 || z < -19.5 || z > 19.5) return;
+          
+          const y = this.getTerrainHeight(x, z);
+          treePositions.push(new THREE.Vector3(x, y, z));
+        });
+      });
+      
+      if (treePositions.length > 0) {
+        const treeGeo = new THREE.ConeGeometry(0.12, 0.45, 4);
+        treeGeo.translate(0, 0.225, 0);
+        const treeMat = new THREE.MeshPhongMaterial({
+          color: 0x166534,
+          flatShading: true
+        });
+        
+        const instancedMesh = new THREE.InstancedMesh(treeGeo, treeMat, treePositions.length);
+        const dummy = new THREE.Object3D();
+        
+        treePositions.forEach((pos, idx) => {
+          dummy.position.copy(pos);
+          const s = 0.8 + Math.random() * 0.4;
+          dummy.scale.set(s, s, s);
+          dummy.updateMatrix();
+          instancedMesh.setMatrixAt(idx, dummy.matrix);
+        });
+        
+        instancedMesh.instanceMatrix.needsUpdate = true;
+        this.features3DGroup.add(instancedMesh);
+      }
+    }
   }
 
   updateTerrainGeometry(elevationGrid) {
@@ -1644,6 +1784,11 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.lastRefLat = refLat;
       this.lastRefLon = refLon;
       this.loadMapTexture(refLat, refLon);
+      this.vectorDataLoaded = false;
+    }
+
+    if (this.config.show_3d_features && !this.vectorDataLoading && !this.vectorDataLoaded) {
+      this.loadVectorData(refLat, refLon);
     }
 
     // Find the station sensor
@@ -1859,6 +2004,10 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       if (elevationScaleInput) {
         elevationScaleInput.value = this._config.elevation_scale !== undefined ? this._config.elevation_scale : '1.5';
       }
+      const show3DFeaturesInput = this.shadowRoot.getElementById('show_3d_features');
+      if (show3DFeaturesInput) {
+        show3DFeaturesInput.checked = this._config.show_3d_features === true;
+      }
     }
   }
 
@@ -2005,6 +2154,13 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
         <div class="paper-input-container">
           <label for="elevation_scale">Vertical Terrain Exaggeration Scale (0.0 to 10.0)</label>
           <input type="text" id="elevation_scale" value="${this._config.elevation_scale !== undefined ? this._config.elevation_scale : '1.5'}">
+        </div>
+        <div class="config-row">
+          <label for="show_3d_features">Show 3D Vector Features (Experimental Lakes & Forests)</label>
+          <label class="switch">
+            <input type="checkbox" id="show_3d_features" ${this._config.show_3d_features === true ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
         </div>
 
         <div class="section-header">Atmospheric & Telemetry Simulations</div>
