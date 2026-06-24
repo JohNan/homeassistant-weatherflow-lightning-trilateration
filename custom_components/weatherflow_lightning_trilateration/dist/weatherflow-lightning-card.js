@@ -367,6 +367,32 @@ class WeatherFlowLightningCard extends HTMLElement {
     return texture;
   }
 
+  createRingLabelSprite(text) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'rgba(0, 0, 0, 0)';
+    ctx.fillRect(0, 0, 128, 64);
+    
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillStyle = '#38bdf8';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 64, 32);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const spriteMaterial = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true
+    });
+    const sprite = new THREE.Sprite(spriteMaterial);
+    sprite.scale.set(2.0, 1.0, 1.0);
+    return sprite;
+  }
+
   addRangeRings() {
     this.rangeRingsGroup = new THREE.Group();
     this.rangeRingsGroup.visible = this.config.show_rings !== false;
@@ -419,6 +445,15 @@ class WeatherFlowLightningCard extends HTMLElement {
     const ewGeo = new THREE.BufferGeometry().setFromPoints(ewPoints);
     const ewLine = new THREE.Line(ewGeo, lineMat);
     this.rangeRingsGroup.add(ewLine);
+
+    // Distance labels on rings
+    this.ringLabels = [];
+    radii.forEach((r) => {
+      const labelSprite = this.createRingLabelSprite(`${r}km`);
+      labelSprite.position.set(0.8, 0.5, -r);
+      this.rangeRingsGroup.add(labelSprite);
+      this.ringLabels.push({ sprite: labelSprite, r: r });
+    });
   }
 
   updateRangeRings() {
@@ -466,6 +501,16 @@ class WeatherFlowLightningCard extends HTMLElement {
         posAttr.setXYZ(i, x, y, 0);
       }
       posAttr.needsUpdate = true;
+    }
+
+    // Update ring labels
+    if (this.ringLabels) {
+      this.ringLabels.forEach((label) => {
+        const x = 0.8;
+        const z = -label.r;
+        const y = this.getTerrainHeight(x, z) + 0.4;
+        label.sprite.position.set(x, y, z);
+      });
     }
   }
 
