@@ -376,7 +376,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     ctx.fillRect(0, 0, 128, 64);
     
     ctx.font = 'bold 24px sans-serif';
-    ctx.fillStyle = '#38bdf8';
+    ctx.fillStyle = '#00f2fe';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, 64, 32);
@@ -411,18 +411,18 @@ class WeatherFlowLightningCard extends HTMLElement {
       }
       const ringGeo = new THREE.BufferGeometry().setFromPoints(points);
       const ringMat = new THREE.LineBasicMaterial({
-        color: 0x38bdf8,
+        color: 0x00f2fe,
         transparent: true,
-        opacity: 0.2
+        opacity: 0.5
       });
       const ringLine = new THREE.Line(ringGeo, ringMat);
       this.rangeRingsGroup.add(ringLine);
     });
 
     const lineMat = new THREE.LineBasicMaterial({
-      color: 0x38bdf8,
+      color: 0x00f2fe,
       transparent: true,
-      opacity: 0.15
+      opacity: 0.3
     });
     
     // N-S line (41 points)
@@ -1516,9 +1516,9 @@ class WeatherFlowLightningCard extends HTMLElement {
       const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
       const isMain = pathIdx === 0;
       const lineMat = new THREE.LineBasicMaterial({
-        color: isMain ? 0xdbeafe : 0x93c5fd,
+        color: isMain ? 0xffdf00 : 0xffb700,
         transparent: true,
-        opacity: isMain ? 1.0 : 0.6
+        opacity: isMain ? 1.0 : 0.7
       });
       const line = new THREE.Line(lineGeo, lineMat);
       this.strikeLayer.add(line);
