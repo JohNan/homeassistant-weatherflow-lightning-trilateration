@@ -568,7 +568,12 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     const refElevation = 100;
-    const scaleFactor = 1.5 / 1250.0;
+    let maxDiff = 0;
+    for (let i = 0; i < 225; i++) {
+      const diff = Math.abs((this.elevationGrid[i] || 0) - refElevation);
+      if (diff > maxDiff) maxDiff = diff;
+    }
+    const scaleFactor = 3.5 / Math.max(100.0, maxDiff);
     this.scaledHeights = new Float32Array(225);
     for (let i = 0; i < 225; i++) {
       this.scaledHeights[i] = ((this.elevationGrid[i] || 0) - refElevation) * scaleFactor;
@@ -684,7 +689,12 @@ class WeatherFlowLightningCard extends HTMLElement {
     
     const centerIndex = 7 * 15 + 7;
     const refElevation = elevationGrid[centerIndex] || 0;
-    const scaleFactor = 1.5 / 1250.0;
+    let maxDiff = 0;
+    for (let i = 0; i < 225; i++) {
+      const diff = Math.abs((elevationGrid[i] || 0) - refElevation);
+      if (diff > maxDiff) maxDiff = diff;
+    }
+    const scaleFactor = 3.5 / Math.max(100.0, maxDiff);
     this.scaledHeights = new Float32Array(225);
     for (let i = 0; i < 225; i++) {
       this.scaledHeights[i] = ((elevationGrid[i] || 0) - refElevation) * scaleFactor;
