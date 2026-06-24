@@ -59,6 +59,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       zoom_level: 18.0,
       show_weather: true,
       show_daynight: true,
+      min_brightness: 0.8,
       ...config
     };
     if (this.container) {
@@ -101,7 +102,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       }
     }
     
-    if (oldConfig.show_daynight !== this.config.show_daynight) {
+    if (oldConfig.show_daynight !== this.config.show_daynight || oldConfig.min_brightness !== this.config.min_brightness) {
       this.updateDayNightEngine();
     }
     
@@ -1063,7 +1064,8 @@ class WeatherFlowLightningCard extends HTMLElement {
       const nightColor = new THREE.Color(0x334155);
       const dayColor = new THREE.Color(0xffffff);
       this.ambientLight.color.copy(nightColor).lerp(dayColor, factor);
-      this.ambientLight.intensity = 0.8 + factor * 0.7;
+      const minB = this.config.min_brightness !== undefined ? parseFloat(this.config.min_brightness) : 0.8;
+      this.ambientLight.intensity = minB + factor * (1.5 - minB);
     }
 
     if (this.dirLight) {
@@ -1792,6 +1794,10 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       if (showDayNightInput) {
         showDayNightInput.checked = this._config.show_daynight !== false;
       }
+      const minBrightnessInput = this.shadowRoot.getElementById('min_brightness');
+      if (minBrightnessInput) {
+        minBrightnessInput.value = this._config.min_brightness !== undefined ? this._config.min_brightness : '0.8';
+      }
     }
   }
 
@@ -1952,6 +1958,10 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
             <span class="slider"></span>
           </label>
         </div>
+        <div class="paper-input-container">
+          <label for="min_brightness">Min Night Ambient Brightness (0.1 - 1.5)</label>
+          <input type="text" id="min_brightness" value="${this._config.min_brightness !== undefined ? this._config.min_brightness : '0.8'}">
+        </div>
         <div class="config-row">
           <label for="show_heatmap">Show Storm Path Heatmap</label>
           <label class="switch">
@@ -1981,7 +1991,7 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
     if (!this._config) return;
     const target = e.target;
     let value = target.value;
-    if (target.id === 'zoom_level') {
+    if (target.id === 'zoom_level' || target.id === 'min_brightness') {
       const parsed = parseFloat(value);
       if (!isNaN(parsed)) {
         value = parsed;
