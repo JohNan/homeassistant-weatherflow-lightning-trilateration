@@ -712,9 +712,9 @@ class TempestStrikeCoordinator:
 
         ref_lat, ref_lon = primary_coords
         
-        # Define grid dimensions: 15x15 points spanning 50km
+        # Define grid dimensions: 15x15 points spanning 40km
         grid_size = 15
-        span_km = 50.0
+        span_km = 40.0
         
         # Calculate latitude and longitude ranges
         lat_span = span_km / 111.1
