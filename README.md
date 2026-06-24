@@ -7,6 +7,8 @@
 
 A native Home Assistant custom integration that connects to the WeatherFlow Tempest WebSocket API, listens for lightning strikes across multiple weather stations, and trilaterates the geographic strike location in real time. Calculated strikes are plotted directly on the Home Assistant map.
 
+![3D WebGL Dashboard Card Screenshot](screenshot.jpg)
+
 ---
 
 ## Features

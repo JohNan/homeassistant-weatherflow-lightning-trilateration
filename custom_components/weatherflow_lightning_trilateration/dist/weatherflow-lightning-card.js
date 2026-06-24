@@ -180,6 +180,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.container.style.cursor = 'grab';
     this.container.style.userSelect = 'none';
     this.container.style.webkitUserSelect = 'none';
+    this.container.style.touchAction = 'none';
     this.wrapper.appendChild(this.container);
 
     this.createPlaybackControls();
@@ -293,6 +294,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     this.container.addEventListener('touchmove', (e) => {
       this.lastInteractionTime = Date.now();
+      e.preventDefault();
       if (e.touches.length === 1 && isDragging) {
         const deltaX = e.touches[0].clientX - previousMousePosition.x;
         const deltaY = e.touches[0].clientY - previousMousePosition.y;
@@ -303,7 +305,6 @@ class WeatherFlowLightningCard extends HTMLElement {
 
         previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       } else if (e.touches.length === 2) {
-        e.preventDefault();
         const dist = Math.hypot(
           e.touches[0].clientX - e.touches[1].clientX,
           e.touches[0].clientY - e.touches[1].clientY
