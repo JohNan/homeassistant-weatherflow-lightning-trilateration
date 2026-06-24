@@ -58,7 +58,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       auto_orbit: true,
       zoom_level: 18.0,
       show_weather: true,
-      show_trend: true,
+      show_daynight: true,
       ...config
     };
     if (this.container) {
@@ -99,6 +99,10 @@ class WeatherFlowLightningCard extends HTMLElement {
           this.terrainMesh.material.needsUpdate = true;
         }
       }
+    }
+    
+    if (oldConfig.show_daynight !== this.config.show_daynight) {
+      this.updateDayNightEngine();
     }
     
     if (oldConfig.zoom_level !== this.config.zoom_level) {
@@ -1018,6 +1022,30 @@ class WeatherFlowLightningCard extends HTMLElement {
   updateDayNightEngine() {
     if (!this.initialized || !this.scene) return;
     
+    if (this.config.show_daynight === false) {
+      if (this.ambientLight) {
+        this.ambientLight.color.setHex(0x0f172a);
+        this.ambientLight.intensity = 1.5;
+      }
+      if (this.dirLight) {
+        this.dirLight.color.setHex(0x38bdf8);
+        this.dirLight.intensity = 1.0;
+        this.dirLight.position.set(5, 10, 7);
+      }
+      if (this.starField && this.starField.material) {
+        this.starField.material.opacity = 0.6;
+        this.starField.visible = true;
+      }
+      const defaultBg = new THREE.Color(0x02040a);
+      if (this.renderer) {
+        this.renderer.setClearColor(defaultBg, 1);
+      }
+      if (this.scene.fog) {
+        this.scene.fog.color.copy(defaultBg);
+      }
+      return;
+    }
+
     const rad = this.solarRadiation !== undefined ? this.solarRadiation : 1000.0;
     const factor = Math.max(0.0, Math.min(1.0, rad / 1000.0));
 
@@ -1717,6 +1745,14 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       if (autoOrbitInput) {
         autoOrbitInput.checked = this._config.auto_orbit !== false;
       }
+      const showWeatherInput = this.shadowRoot.getElementById('show_weather');
+      if (showWeatherInput) {
+        showWeatherInput.checked = this._config.show_weather !== false;
+      }
+      const showDayNightInput = this.shadowRoot.getElementById('show_daynight');
+      if (showDayNightInput) {
+        showDayNightInput.checked = this._config.show_daynight !== false;
+      }
     }
   }
 
@@ -1803,8 +1839,24 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
         input:checked + .slider:before {
           transform: translateX(16px);
         }
+        .section-header {
+          font-weight: bold;
+          font-size: 12px;
+          color: var(--primary-color, #03a9f4);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-top: 18px;
+          margin-bottom: 6px;
+          padding-bottom: 4px;
+          border-bottom: 1px solid var(--divider-color, rgba(128, 128, 128, 0.2));
+        }
+        .section-header:first-of-type {
+          margin-top: 0;
+        }
       </style>
       <div class="card-config">
+        <div class="section-header">General Settings</div>
+        
         <div class="paper-input-container">
           <label for="height">Card Height (e.g. 350px)</label>
           <input type="text" id="height" value="${this._config.height || '350px'}">
@@ -1813,6 +1865,15 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
           <label for="zoom_level">Default Zoom Radius (10-150)</label>
           <input type="text" id="zoom_level" value="${this._config.zoom_level !== undefined ? this._config.zoom_level : '18.0'}">
         </div>
+        <div class="config-row">
+          <label for="auto_orbit">Enable Idle Camera Orbit</label>
+          <label class="switch">
+            <input type="checkbox" id="auto_orbit" ${this._config.auto_orbit !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="section-header">Terrain & Map Layers</div>
         
         <div class="config-row">
           <label for="show_grid">Show Terrain Grid Overlay</label>
@@ -1821,7 +1882,6 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
             <span class="slider"></span>
           </label>
         </div>
-        
         <div class="config-row">
           <label for="show_map">Show Ground Map Texture</label>
           <label class="switch">
@@ -1829,7 +1889,6 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
             <span class="slider"></span>
           </label>
         </div>
-        
         <div class="config-row">
           <label for="show_rings">Show Range Rings & Crosshairs</label>
           <label class="switch">
@@ -1837,19 +1896,27 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
             <span class="slider"></span>
           </label>
         </div>
+
+        <div class="section-header">Atmospheric & Telemetry Simulations</div>
         
+        <div class="config-row">
+          <label for="show_weather">Show Weather Telemetry (Precipitation & Wind)</label>
+          <label class="switch">
+            <input type="checkbox" id="show_weather" ${this._config.show_weather !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="config-row">
+          <label for="show_daynight">Show Day/Night Solar Engine</label>
+          <label class="switch">
+            <input type="checkbox" id="show_daynight" ${this._config.show_daynight !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
         <div class="config-row">
           <label for="show_heatmap">Show Storm Path Heatmap</label>
           <label class="switch">
             <input type="checkbox" id="show_heatmap" ${this._config.show_heatmap !== false ? 'checked' : ''}>
-            <span class="slider"></span>
-          </label>
-        </div>
-        
-        <div class="config-row">
-          <label for="auto_orbit">Enable Idle Camera Orbit</label>
-          <label class="switch">
-            <input type="checkbox" id="auto_orbit" ${this._config.auto_orbit !== false ? 'checked' : ''}>
             <span class="slider"></span>
           </label>
         </div>
