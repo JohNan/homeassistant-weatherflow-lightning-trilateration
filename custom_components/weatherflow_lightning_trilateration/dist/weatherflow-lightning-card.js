@@ -60,6 +60,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       show_weather: true,
       show_daynight: true,
       min_brightness: 0.8,
+      elevation_scale: 1.5,
       ...config
     };
     if (this.container) {
@@ -111,6 +112,14 @@ class WeatherFlowLightningCard extends HTMLElement {
       if (!isNaN(parsed)) {
         this.zoomRadius = parsed;
         this.updateCameraPosition();
+      }
+    }
+
+    if (oldConfig.elevation_scale !== this.config.elevation_scale) {
+      if (this.elevationGrid && this.elevationGrid.length === 225) {
+        this.updateTerrainGeometry(this.elevationGrid);
+      } else {
+        this.generateProceduralTerrain();
       }
     }
   }
@@ -568,12 +577,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     const refElevation = 100;
-    let maxDiff = 0;
-    for (let i = 0; i < 225; i++) {
-      const diff = Math.abs((this.elevationGrid[i] || 0) - refElevation);
-      if (diff > maxDiff) maxDiff = diff;
-    }
-    const scaleFactor = 3.5 / Math.max(100.0, maxDiff);
+    const exaggeration = this.config.elevation_scale !== undefined ? parseFloat(this.config.elevation_scale) : 1.5;
+    const scaleFactor = exaggeration / 1250.0;
     this.scaledHeights = new Float32Array(225);
     for (let i = 0; i < 225; i++) {
       this.scaledHeights[i] = ((this.elevationGrid[i] || 0) - refElevation) * scaleFactor;
@@ -689,12 +694,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     
     const centerIndex = 7 * 15 + 7;
     const refElevation = elevationGrid[centerIndex] || 0;
-    let maxDiff = 0;
-    for (let i = 0; i < 225; i++) {
-      const diff = Math.abs((elevationGrid[i] || 0) - refElevation);
-      if (diff > maxDiff) maxDiff = diff;
-    }
-    const scaleFactor = 3.5 / Math.max(100.0, maxDiff);
+    const exaggeration = this.config.elevation_scale !== undefined ? parseFloat(this.config.elevation_scale) : 1.5;
+    const scaleFactor = exaggeration / 1250.0;
     this.scaledHeights = new Float32Array(225);
     for (let i = 0; i < 225; i++) {
       this.scaledHeights[i] = ((elevationGrid[i] || 0) - refElevation) * scaleFactor;
@@ -1854,6 +1855,10 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       if (minBrightnessInput) {
         minBrightnessInput.value = this._config.min_brightness !== undefined ? this._config.min_brightness : '0.8';
       }
+      const elevationScaleInput = this.shadowRoot.getElementById('elevation_scale');
+      if (elevationScaleInput) {
+        elevationScaleInput.value = this._config.elevation_scale !== undefined ? this._config.elevation_scale : '1.5';
+      }
     }
   }
 
@@ -1997,6 +2002,10 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
             <span class="slider"></span>
           </label>
         </div>
+        <div class="paper-input-container">
+          <label for="elevation_scale">Vertical Terrain Exaggeration Scale (0.0 to 10.0)</label>
+          <input type="text" id="elevation_scale" value="${this._config.elevation_scale !== undefined ? this._config.elevation_scale : '1.5'}">
+        </div>
 
         <div class="section-header">Atmospheric & Telemetry Simulations</div>
         
@@ -2047,7 +2056,7 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
     if (!this._config) return;
     const target = e.target;
     let value = target.value;
-    if (target.id === 'zoom_level' || target.id === 'min_brightness') {
+    if (target.id === 'zoom_level' || target.id === 'min_brightness' || target.id === 'elevation_scale') {
       const parsed = parseFloat(value);
       if (!isNaN(parsed)) {
         value = parsed;
