@@ -757,12 +757,12 @@ class WeatherFlowLightningCard extends HTMLElement {
           const lat = pt[0];
           const lon = pt[1];
           const x = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-          const z = R * (lat - refLat) * (Math.PI / 180.0);
+          const worldZ = -R * (lat - refLat) * (Math.PI / 180.0);
           
-          if (x < -20 || x > 20 || z < -20 || z > 20) return;
+          if (x < -20 || x > 20 || worldZ < -20 || worldZ > 20) return;
           
-          shapePoints.push(new THREE.Vector2(x, -z));
-          avgY += this.getTerrainHeight(x, z);
+          shapePoints.push(new THREE.Vector2(x, -worldZ));
+          avgY += this.getTerrainHeight(x, worldZ);
           validPoints++;
         });
         
@@ -791,12 +791,12 @@ class WeatherFlowLightningCard extends HTMLElement {
           const lat = pt[0];
           const lon = pt[1];
           const x = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-          const z = R * (lat - refLat) * (Math.PI / 180.0);
+          const worldZ = -R * (lat - refLat) * (Math.PI / 180.0);
           
-          if (x < -19.5 || x > 19.5 || z < -19.5 || z > 19.5) return;
+          if (x < -19.5 || x > 19.5 || worldZ < -19.5 || worldZ > 19.5) return;
           
-          const y = this.getTerrainHeight(x, z);
-          treePositions.push(new THREE.Vector3(x, y, z));
+          const y = this.getTerrainHeight(x, worldZ);
+          treePositions.push(new THREE.Vector3(x, y, worldZ));
         });
       });
       
@@ -1841,7 +1841,7 @@ class WeatherFlowLightningCard extends HTMLElement {
             const lon = parseFloat(st.longitude);
 
             const gridX = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-            const gridZ = R * (lat - refLat) * (Math.PI / 180.0);
+            const gridZ = -R * (lat - refLat) * (Math.PI / 180.0);
 
             let color = 0x64748b; // subtle blue-gray for discovered/public
             if (st.type === "primary") color = 0x10b981; // vibrant emerald green for local/primary
@@ -1885,7 +1885,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
       if (!isNaN(lat) && !isNaN(lon)) {
         const gridX = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-        const gridZ = R * (lat - refLat) * (Math.PI / 180.0);
+        const gridZ = -R * (lat - refLat) * (Math.PI / 180.0);
         const time = new Date(stateObj.last_changed).getTime();
         activeStrikes.push({
           id: entityId,
