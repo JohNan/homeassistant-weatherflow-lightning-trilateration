@@ -1420,6 +1420,27 @@ class WeatherFlowLightningCard extends HTMLElement {
     return points;
   }
 
+  createLightningBranches(start, end, segments = 8) {
+    const mainPath = this.createLightningPath(start, end, segments);
+    const paths = [mainPath];
+
+    for (let i = 1; i < mainPath.length - 2; i++) {
+      if (Math.random() < 0.25) {
+        const branchStart = mainPath[i].clone();
+        const remainingFraction = 1.0 - (i / mainPath.length);
+        const branchLength = remainingFraction * 6.0;
+        
+        const dir = new THREE.Vector3().subVectors(end, start).normalize();
+        dir.add(new THREE.Vector3((Math.random() - 0.5) * 1.5, -0.2, (Math.random() - 0.5) * 1.5)).normalize();
+        
+        const branchEnd = new THREE.Vector3().addVectors(branchStart, dir.multiplyScalar(branchLength));
+        const branchPath = this.createLightningPath(branchStart, branchEnd, 4);
+        paths.push(branchPath);
+      }
+    }
+    return paths;
+  }
+
   triggerStrikeAnimation(x, z) {
     if (!this.initialized) return;
 
@@ -1429,21 +1450,22 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     // Lightning Bolt Lines
     const lines = [];
-    const branches = 2;
-    for (let b = 0; b < branches; b++) {
-      const path = this.createLightningPath(startPos, targetPos);
+    const paths = this.createLightningBranches(startPos, targetPos);
+    
+    paths.forEach((path, pathIdx) => {
       const curve = new THREE.CatmullRomCurve3(path);
-      const points = curve.getPoints(40);
+      const points = curve.getPoints(30);
       const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+      const isMain = pathIdx === 0;
       const lineMat = new THREE.LineBasicMaterial({
-        color: 0x00f2fe,
+        color: isMain ? 0xdbeafe : 0x93c5fd,
         transparent: true,
-        opacity: 1.0
+        opacity: isMain ? 1.0 : 0.6
       });
       const line = new THREE.Line(lineGeo, lineMat);
       this.strikeLayer.add(line);
       lines.push(line);
-    }
+    });
 
     // Volumetric Glow Sprite
     const spriteMat = new THREE.SpriteMaterial({
@@ -1506,7 +1528,13 @@ class WeatherFlowLightningCard extends HTMLElement {
       } else if (frac < 0.5) {
         lines.forEach(l => { l.material.opacity = 1.0 - (frac - 0.2) / 0.3; });
       } else {
-        lines.forEach(l => { if (l.parent) this.strikeLayer.remove(l); });
+        lines.forEach(l => {
+          if (l.parent) {
+            this.strikeLayer.remove(l);
+            if (l.geometry) l.geometry.dispose();
+            if (l.material) l.material.dispose();
+          }
+        });
       }
 
       if (frac < 0.6) {
