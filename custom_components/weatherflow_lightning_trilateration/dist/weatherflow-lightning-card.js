@@ -495,14 +495,8 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   getGridHeight(r, c) {
-    if (!this.elevationGrid || this.elevationGrid.length !== 225) return 0;
-    const i = 14 - r;
-    const j = c;
-    const rawElev = this.elevationGrid[i * 15 + j] || 0;
-    const centerIndex = 7 * 15 + 7;
-    const refElevation = this.elevationGrid[centerIndex] || 0;
-    const scaleFactor = 1.5 / 1250.0;
-    return (rawElev - refElevation) * scaleFactor;
+    if (!this.scaledHeights) return 0;
+    return this.scaledHeights[(14 - r) * 15 + c];
   }
 
   generateProceduralTerrain() {
@@ -526,17 +520,20 @@ class WeatherFlowLightningCard extends HTMLElement {
       }
     }
 
-    const posAttr = this.terrainGeo.attributes.position;
     const refElevation = 100;
     const scaleFactor = 1.5 / 1250.0;
+    this.scaledHeights = new Float32Array(225);
+    for (let i = 0; i < 225; i++) {
+      this.scaledHeights[i] = ((this.elevationGrid[i] || 0) - refElevation) * scaleFactor;
+    }
 
+    const posAttr = this.terrainGeo.attributes.position;
     for (let r = 0; r <= 14; r++) {
       const i = 14 - r;
       for (let c = 0; c <= 14; c++) {
         const j = c;
         const vertexIndex = r * 15 + c;
-        const rawElev = this.elevationGrid[i * 15 + j] || 0;
-        const relElev = (rawElev - refElevation) * scaleFactor;
+        const relElev = this.scaledHeights[i * 15 + j];
         posAttr.setZ(vertexIndex, relElev);
       }
     }
@@ -638,18 +635,21 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
     this.elevationGrid = elevationGrid;
     
-    const posAttr = this.terrainGeo.attributes.position;
     const centerIndex = 7 * 15 + 7;
     const refElevation = elevationGrid[centerIndex] || 0;
     const scaleFactor = 1.5 / 1250.0;
+    this.scaledHeights = new Float32Array(225);
+    for (let i = 0; i < 225; i++) {
+      this.scaledHeights[i] = ((elevationGrid[i] || 0) - refElevation) * scaleFactor;
+    }
 
+    const posAttr = this.terrainGeo.attributes.position;
     for (let r = 0; r <= 14; r++) {
       const i = 14 - r;
       for (let c = 0; c <= 14; c++) {
         const j = c;
         const vertexIndex = r * 15 + c;
-        const rawElev = elevationGrid[i * 15 + j] || 0;
-        const relElev = (rawElev - refElevation) * scaleFactor;
+        const relElev = this.scaledHeights[i * 15 + j];
         posAttr.setZ(vertexIndex, relElev);
       }
     }
@@ -735,53 +735,53 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (!this.scene) return;
     const lifespan = 90000;
     const nowVirtual = this.playbackTime;
-    
-    const activeHeatmapStrikes = this.strikeHistory.filter(s => {
-      const age = nowVirtual - s.time;
-      return age >= 0 && age <= lifespan;
-    });
 
     if (!this.heatmapMeshes) {
       this.heatmapMeshes = new Map();
     }
 
+    const activeIds = new Set();
+
+    for (let i = 0; i < this.strikeHistory.length; i++) {
+      const s = this.strikeHistory[i];
+      const age = nowVirtual - s.time;
+      if (age >= 0 && age <= lifespan) {
+        activeIds.add(s.id);
+        const pct = age / lifespan;
+        const opacity = 0.7 * (1.0 - pct);
+        const scale = 1.0 - pct * 0.4;
+
+        let hm = this.heatmapMeshes.get(s.id);
+        if (!hm) {
+          const mat = new THREE.MeshBasicMaterial({
+            color: 0xf59e0b,
+            transparent: true,
+            opacity: opacity,
+            depthWrite: false
+          });
+          const mesh = new THREE.Mesh(this.heatGeo, mat);
+          const y = this.getTerrainHeight(s.x, s.z);
+          mesh.position.set(s.x, y, s.z);
+          mesh.scale.set(scale, scale, scale);
+          this.scene.add(mesh);
+
+          hm = { mesh, material: mat };
+          this.heatmapMeshes.set(s.id, hm);
+        } else {
+          hm.material.opacity = opacity;
+          hm.mesh.scale.set(scale, scale, scale);
+          hm.mesh.position.y = this.getTerrainHeight(s.x, s.z);
+        }
+      }
+    }
+
     for (const [id, hm] of this.heatmapMeshes.entries()) {
-      if (!activeHeatmapStrikes.some(s => s.id === id)) {
+      if (!activeIds.has(id)) {
         this.scene.remove(hm.mesh);
         if (hm.material) hm.material.dispose();
         this.heatmapMeshes.delete(id);
       }
     }
-
-    activeHeatmapStrikes.forEach(s => {
-      const age = nowVirtual - s.time;
-      const pct = age / lifespan;
-      const opacity = 0.7 * (1.0 - pct);
-      const scale = 1.0 - pct * 0.4;
-      
-      let hm = this.heatmapMeshes.get(s.id);
-      if (!hm) {
-        const mat = new THREE.MeshBasicMaterial({
-          color: 0xf59e0b,
-          transparent: true,
-          opacity: opacity,
-          depthWrite: false
-        });
-        const mesh = new THREE.Mesh(this.heatGeo, mat);
-        const y = this.getTerrainHeight(s.x, s.z);
-        mesh.position.set(s.x, y, s.z);
-        mesh.scale.set(scale, scale, scale);
-        this.scene.add(mesh);
-        
-        hm = { mesh, material: mat };
-        this.heatmapMeshes.set(s.id, hm);
-      } else {
-        hm.material.opacity = opacity;
-        hm.mesh.scale.set(scale, scale, scale);
-        const y = this.getTerrainHeight(s.x, s.z);
-        hm.mesh.position.y = y;
-      }
-    });
   }
 
   addStaticElements() {
@@ -949,21 +949,26 @@ class WeatherFlowLightningCard extends HTMLElement {
     const showRain = showWeather && (this.rainRate > 0);
     const showWind = showWeather && (this.windSpeed > 0);
 
+    const windRad = (this.windDirection || 0) * Math.PI / 180.0;
+    const sinWind = Math.sin(windRad);
+    const cosWind = Math.cos(windRad);
+
     if (this.rainParticles) {
       this.rainParticles.visible = showRain;
       if (showRain) {
         const posAttr = this.rainParticles.geometry.attributes.position;
+        const positions = posAttr.array;
         const count = posAttr.count;
         
-        const windRad = (this.windDirection || 0) * Math.PI / 180.0;
-        const driftX = -Math.sin(windRad) * (this.windSpeed || 0) * 0.1;
-        const driftZ = -Math.cos(windRad) * (this.windSpeed || 0) * 0.1;
+        const driftX = -sinWind * (this.windSpeed || 0) * 0.1;
+        const driftZ = -cosWind * (this.windSpeed || 0) * 0.1;
         const fallSpeed = 10.0 + Math.min(20.0, this.rainRate * 2.0);
 
         for (let i = 0; i < count; i++) {
-          let x = posAttr.getX(i);
-          let y = posAttr.getY(i);
-          let z = posAttr.getZ(i);
+          const idx = i * 3;
+          let x = positions[idx];
+          let y = positions[idx + 1];
+          let z = positions[idx + 2];
 
           y -= fallSpeed * deltaTime;
           x += driftX * deltaTime;
@@ -976,7 +981,9 @@ class WeatherFlowLightningCard extends HTMLElement {
             z = (Math.random() - 0.5) * 40;
           }
 
-          posAttr.setXYZ(i, x, y, z);
+          positions[idx] = x;
+          positions[idx + 1] = y;
+          positions[idx + 2] = z;
         }
         posAttr.needsUpdate = true;
       }
@@ -986,16 +993,17 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.windParticles.visible = showWind;
       if (showWind) {
         const posAttr = this.windParticles.geometry.attributes.position;
+        const positions = posAttr.array;
         const count = posAttr.count;
 
-        const windRad = (this.windDirection || 0) * Math.PI / 180.0;
-        const driftX = -Math.sin(windRad) * (this.windSpeed || 0) * 0.5;
-        const driftZ = -Math.cos(windRad) * (this.windSpeed || 0) * 0.5;
+        const driftX = -sinWind * (this.windSpeed || 0) * 0.5;
+        const driftZ = -cosWind * (this.windSpeed || 0) * 0.5;
 
         for (let i = 0; i < count; i++) {
-          let x = posAttr.getX(i);
-          let y = posAttr.getY(i);
-          let z = posAttr.getZ(i);
+          const idx = i * 3;
+          let x = positions[idx];
+          let y = positions[idx + 1];
+          let z = positions[idx + 2];
 
           x += driftX * deltaTime;
           z += driftZ * deltaTime;
@@ -1012,7 +1020,9 @@ class WeatherFlowLightningCard extends HTMLElement {
             y = Math.random() * 8;
           }
 
-          posAttr.setXYZ(i, x, y, z);
+          positions[idx] = x;
+          positions[idx + 1] = y;
+          positions[idx + 2] = z;
         }
         posAttr.needsUpdate = true;
       }
@@ -1121,10 +1131,11 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (this.stationMeshes) {
       this.stationMeshes.forEach(sm => {
         sm.pulseVal += 0.04;
-        const scale = 1 + Math.sin(sm.pulseVal) * 0.1;
+        const sinVal = Math.sin(sm.pulseVal);
+        const scale = 1 + sinVal * 0.1;
         if (sm.mesh.children && sm.mesh.children[0]) {
           sm.mesh.children[0].scale.set(scale, scale, 1);
-          sm.mesh.children[0].material.opacity = 0.5 + Math.sin(sm.pulseVal) * 0.3;
+          sm.mesh.children[0].material.opacity = 0.5 + sinVal * 0.3;
         }
       });
     }
