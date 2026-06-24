@@ -151,12 +151,119 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this.cleanupThreeJS();
+  }
+
+  cleanupThreeJS() {
+    this.isPlaying = false;
+    if (this.animationFrameId) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+    
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
+      this.resizeObserver = null;
     }
     if (this._mouseupHandler) {
       window.removeEventListener('mouseup', this._mouseupHandler);
+      this._mouseupHandler = null;
     }
+    
+    // Dispose 3D Vector Features Group
+    if (this.features3DGroup) {
+      this.scene.remove(this.features3DGroup);
+      this.disposeHierarchy(this.features3DGroup);
+      this.features3DGroup = null;
+    }
+    
+    // Dispose Station Meshes
+    if (this.stationMeshes) {
+      this.stationMeshes.forEach(sm => {
+        this.scene.remove(sm.mesh);
+        this.disposeHierarchy(sm.mesh);
+      });
+      this.stationMeshes = [];
+    }
+    
+    // Dispose Heatmap Meshes
+    if (this.heatmapMeshes) {
+      for (const [id, hm] of this.heatmapMeshes.entries()) {
+        this.scene.remove(hm.mesh);
+        if (hm.material) hm.material.dispose();
+      }
+      this.heatmapMeshes.clear();
+    }
+    
+    // Dispose Range Rings Group
+    if (this.rangeRingsGroup) {
+      this.scene.remove(this.rangeRingsGroup);
+      this.disposeHierarchy(this.rangeRingsGroup);
+      this.rangeRingsGroup = null;
+    }
+    
+    // Dispose Static Elements
+    if (this.terrainMesh) {
+      this.scene.remove(this.terrainMesh);
+      if (this.terrainMesh.geometry) this.terrainMesh.geometry.dispose();
+      if (this.terrainMesh.material) {
+        if (this.terrainMesh.material.map) this.terrainMesh.material.map.dispose();
+        this.terrainMesh.material.dispose();
+      }
+    }
+    if (this.terrainWire) {
+      this.scene.remove(this.terrainWire);
+      if (this.terrainWire.geometry) this.terrainWire.geometry.dispose();
+      if (this.terrainWire.material) this.terrainWire.material.dispose();
+    }
+    if (this.starField) {
+      this.scene.remove(this.starField);
+      if (this.starField.geometry) this.starField.geometry.dispose();
+      if (this.starField.material) this.starField.material.dispose();
+    }
+    if (this.rainParticles) {
+      this.scene.remove(this.rainParticles);
+      if (this.rainParticles.geometry) this.rainParticles.geometry.dispose();
+      if (this.rainParticles.material) this.rainParticles.material.dispose();
+    }
+    if (this.windParticles) {
+      this.scene.remove(this.windParticles);
+      if (this.windParticles.geometry) this.windParticles.geometry.dispose();
+      if (this.windParticles.material) this.windParticles.material.dispose();
+    }
+    
+    // Shared geometries/textures
+    if (this.heatGeo) this.heatGeo.dispose();
+    if (this.glowTexture) this.glowTexture.dispose();
+    
+    // Lights
+    if (this.ambientLight) this.scene.remove(this.ambientLight);
+    if (this.dirLight) this.scene.remove(this.dirLight);
+    
+    // Renderer
+    if (this.renderer) {
+      if (this.renderer.domElement && this.renderer.domElement.parentNode) {
+        this.renderer.domElement.parentNode.removeChild(this.renderer.domElement);
+      }
+      this.renderer.dispose();
+      this.renderer = null;
+    }
+    
+    this.initialized = false;
+  }
+  
+  disposeHierarchy(obj) {
+    if (!obj) return;
+    obj.traverse(child => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(m => m.dispose());
+        } else {
+          child.material.dispose();
+        }
+      }
+    });
   }
 
   updateCameraPosition() {
@@ -1296,7 +1403,8 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   animate() {
-    requestAnimationFrame(() => this.animate());
+    if (!this.initialized) return;
+    this.animationFrameId = requestAnimationFrame(() => this.animate());
 
     this.tickPlayback();
 
@@ -1752,7 +1860,11 @@ class WeatherFlowLightningCard extends HTMLElement {
         wave.scale.set(scale, scale, 1);
         wave.material.opacity = 0.8 * (1 - frac / 0.8);
       } else {
-        if (wave.parent) this.strikeLayer.remove(wave);
+        if (wave.parent) {
+          this.strikeLayer.remove(wave);
+          if (wave.geometry) wave.geometry.dispose();
+          if (wave.material) wave.material.dispose();
+        }
       }
 
       domes.forEach(d => {
@@ -1761,7 +1873,11 @@ class WeatherFlowLightningCard extends HTMLElement {
         } else if (frac < 0.9) {
           d.mesh.material.opacity = d.targetOpacity * (1 - (frac - 0.3) / 0.6);
         } else {
-          if (d.mesh.parent) this.strikeLayer.remove(d.mesh);
+          if (d.mesh.parent) {
+            this.strikeLayer.remove(d.mesh);
+            if (d.mesh.geometry) d.mesh.geometry.dispose();
+            if (d.mesh.material) d.mesh.material.dispose();
+          }
         }
       });
 
