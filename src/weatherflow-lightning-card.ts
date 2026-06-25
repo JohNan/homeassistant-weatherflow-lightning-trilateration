@@ -1857,7 +1857,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
 
     let progress = 0;
-    const duration = 40;
+    const duration = 60;
 
     const animateSequence = () => {
       progress++;
