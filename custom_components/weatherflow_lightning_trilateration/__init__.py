@@ -767,7 +767,7 @@ class TempestStrikeCoordinator:
 
         ref_lat, ref_lon = primary_coords
         cache_path = self.hass.config.path(
-            "custom_components/weatherflow_lightning_trilateration/vector_cache.json"
+            "custom_components/weatherflow_lightning_trilateration/vector_cache_v2.json"
         )
 
         if os.path.exists(cache_path):
@@ -787,23 +787,38 @@ class TempestStrikeCoordinator:
         );
         out geom;
         """
-        url = "https://overpass-api.de/api/interpreter"
+        urls = [
+            "https://overpass.openstreetmap.fr/api/interpreter",
+            "https://de.overpass-api.de/api/interpreter",
+            "https://overpass-api.de/api/interpreter",
+        ]
+        headers = {
+            "User-Agent": "HomeAssistantWeatherFlowLightningTrilateration/1.0 (github.com/JohNan/homeassistant-weatherflow-lightning-trilateration)",
+        }
         
-        try:
-            session = async_get_clientsession(self.hass)
-            _LOGGER.info("Querying OSM Overpass API for vector data (lakes & forests)...")
-            async with session.post(url, data={"data": query}, timeout=30) as response:
-                if response.status == 200:
-                    raw_data = await response.json()
-                    processed = self._process_vector_data(raw_data)
-                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                    with open(cache_path, "w", encoding="utf-8") as f:
-                        json.dump(processed, f, ensure_ascii=False, indent=2)
-                    _LOGGER.info("Successfully fetched and cached vector data")
-                else:
-                    _LOGGER.warning("Failed to query Overpass API: HTTP %d", response.status)
-        except Exception as e:
-            _LOGGER.error("Failed to fetch vector data from Overpass: %s", e)
+        session = async_get_clientsession(self.hass)
+        success = False
+
+        for url in urls:
+            try:
+                _LOGGER.info("Querying OSM Overpass API for vector data from %s...", url)
+                async with session.post(url, data={"data": query}, headers=headers, timeout=30) as response:
+                    if response.status == 200:
+                        raw_data = await response.json()
+                        processed = self._process_vector_data(raw_data)
+                        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                        with open(cache_path, "w", encoding="utf-8") as f:
+                            json.dump(processed, f, ensure_ascii=False, indent=2)
+                        _LOGGER.info("Successfully fetched and cached vector data from %s", url)
+                        success = True
+                        break
+                    else:
+                        _LOGGER.warning("Failed to query Overpass API at %s: HTTP %d", url, response.status)
+            except Exception as e:
+                _LOGGER.warning("Error fetching vector data from %s: %s", url, e)
+
+        if not success:
+            _LOGGER.error("All Overpass API mirrors failed to return vector data")
 
     def _process_vector_data(self, raw_data) -> dict:
         """Process and simplify OSM JSON Overpass geometry data."""
@@ -811,41 +826,109 @@ class TempestStrikeCoordinator:
         water_features = []
         forest_features = []
 
+        def merge_ways_into_rings(ways_geom):
+            unmerged = []
+            for geom in ways_geom:
+                if not geom:
+                    continue
+                pts = []
+                for pt in geom:
+                    lat = pt.get("lat")
+                    lon = pt.get("lon")
+                    if lat is not None and lon is not None:
+                        pts.append((lat, lon))
+                if len(pts) >= 2:
+                    unmerged.append(pts)
+
+            rings = []
+            while unmerged:
+                current = unmerged.pop(0)
+                extended = True
+                while extended:
+                    extended = False
+                    for i, seg in enumerate(unmerged):
+                        if abs(seg[0][0] - current[-1][0]) < 1e-7 and abs(seg[0][1] - current[-1][1]) < 1e-7:
+                            current.extend(seg[1:])
+                            unmerged.pop(i)
+                            extended = True
+                            break
+                        elif abs(seg[-1][0] - current[-1][0]) < 1e-7 and abs(seg[-1][1] - current[-1][1]) < 1e-7:
+                            current.extend(seg[:-1][::-1])
+                            unmerged.pop(i)
+                            extended = True
+                            break
+                    
+                    if extended:
+                        continue
+
+                    for i, seg in enumerate(unmerged):
+                        if abs(seg[-1][0] - current[0][0]) < 1e-7 and abs(seg[-1][1] - current[0][1]) < 1e-7:
+                            current = seg[:-1] + current
+                            unmerged.pop(i)
+                            extended = True
+                            break
+                        elif abs(seg[0][0] - current[0][0]) < 1e-7 and abs(seg[0][1] - current[0][1]) < 1e-7:
+                            current = seg[1:][::-1] + current
+                            unmerged.pop(i)
+                            extended = True
+                            break
+
+                rings.append(current)
+            return rings
+
         for elem in elements:
             tags = elem.get("tags", {})
-            geom = elem.get("geometry", [])
+            elem_type = elem.get("type")
             
-            if not geom or len(geom) < 3:
-                continue
-
             is_water = tags.get("natural") == "water" or tags.get("waterway") == "riverbank"
             is_forest = tags.get("landuse") == "forest" or tags.get("natural") == "wood"
 
             if not (is_water or is_forest):
                 continue
 
-            coords = []
-            for pt in geom:
-                lat = pt.get("lat")
-                lon = pt.get("lon")
-                if lat is not None and lon is not None:
-                    coords.append([round(lat, 5), round(lon, 5)])
+            geometries_to_process = []
+            
+            if elem_type == "way":
+                geom = elem.get("geometry", [])
+                if geom and len(geom) >= 3:
+                    geometries_to_process.append(geom)
+            elif elem_type == "relation":
+                members = elem.get("members", [])
+                outer_ways = []
+                for member in members:
+                    if member.get("type") == "way" and member.get("role") in ("outer", ""):
+                        geom = member.get("geometry", [])
+                        if geom:
+                            outer_ways.append(geom)
+                rings = merge_ways_into_rings(outer_ways)
+                for ring in rings:
+                    geom = [{"lat": pt[0], "lon": pt[1]} for pt in ring]
+                    if len(geom) >= 3:
+                        geometries_to_process.append(geom)
 
-            if len(coords) > 100:
-                step = len(coords) // 100 + 1
-                coords = coords[::step]
-                if coords and coords[0] != coords[-1]:
-                    coords.append(coords[0])
+            for geom in geometries_to_process:
+                coords = []
+                for pt in geom:
+                    lat = pt.get("lat")
+                    lon = pt.get("lon")
+                    if lat is not None and lon is not None:
+                        coords.append([round(lat, 5), round(lon, 5)])
 
-            feature = {"coordinates": coords}
-            if is_water:
-                water_features.append(feature)
-            elif is_forest:
-                forest_features.append(feature)
+                if len(coords) > 100:
+                    step = len(coords) // 100 + 1
+                    coords = coords[::step]
+                    if coords and coords[0] != coords[-1]:
+                        coords.append(coords[0])
+
+                feature = {"coordinates": coords}
+                if is_water:
+                    water_features.append(feature)
+                elif is_forest:
+                    forest_features.append(feature)
 
         return {
-            "water": water_features[:150],
-            "forest": forest_features[:150]
+            "water": water_features[:200],
+            "forest": forest_features[:200]
         }
 
     async def async_stop(self) -> None:
@@ -1161,7 +1244,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=9f6e846"
+    url = f"{base_url}?v=198e3a5"
 
     existing_item = None
     if hasattr(resources, "async_items"):
@@ -1231,7 +1314,7 @@ class WeatherFlowVectorDataView(HomeAssistantView):
     async def get(self, request):
         """Handle GET request for vector data."""
         cache_path = self.coordinator.hass.config.path(
-            "custom_components/weatherflow_lightning_trilateration/vector_cache.json"
+            "custom_components/weatherflow_lightning_trilateration/vector_cache_v2.json"
         )
         if os.path.exists(cache_path):
             try:
