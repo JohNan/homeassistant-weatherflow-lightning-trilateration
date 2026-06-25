@@ -18,9 +18,7 @@ STORAGE_KEY = "weatherflow_lightning_trilateration.strikes"
 STORAGE_VERSION = 1
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities
-) -> None:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
     """Set up the geo_location platform for WeatherFlow Lightning Trilateration."""
     _ADD_ENTITIES_CALLBACKS.append(async_add_entities)
 
@@ -69,9 +67,7 @@ async def async_setup_entry(
             for add_callback in _ADD_ENTITIES_CALLBACKS:
                 add_callback([entity])
 
-    remove_listener = hass.bus.async_listen(
-        EVENT_STRIKE_CALCULATED, _handle_strike_event
-    )
+    remove_listener = hass.bus.async_listen(EVENT_STRIKE_CALCULATED, _handle_strike_event)
     entry.async_on_unload(remove_listener)
 
     entry.async_on_unload(lambda: _ADD_ENTITIES_CALLBACKS.remove(async_add_entities))
@@ -97,9 +93,7 @@ class WeatherFlowStrikeStorage:
 
     def add_strike(self, latitude: float, longitude: float, timestamp: float) -> None:
         """Add a strike and schedule save."""
-        self.strikes.append(
-            {"latitude": latitude, "longitude": longitude, "time": timestamp}
-        )
+        self.strikes.append({"latitude": latitude, "longitude": longitude, "time": timestamp})
         self._schedule_save()
 
     def remove_strike(self, timestamp: float) -> None:

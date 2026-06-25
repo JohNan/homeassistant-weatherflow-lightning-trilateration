@@ -11,7 +11,7 @@ import time
 
 import voluptuous as vol
 import websockets
-from homeassistant.components.http import StaticPathConfig, HomeAssistantView
+from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
@@ -93,26 +93,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ref_lat = hass.config.latitude
             ref_lon = hass.config.longitude
             R = 6371.0
-            
+
             dir_rad = math.radians(direction_deg)
             speed_kms = speed_kmh / 3600.0
-            
+
             start_offset_km = -5.0
             start_x = start_offset_km * math.sin(dir_rad)
             start_y = start_offset_km * math.cos(dir_rad)
-            
+
             for i in range(strike_count):
                 dt_sec = i * interval_sec
                 current_x = start_x + (speed_kms * dt_sec * math.sin(dir_rad))
                 current_y = start_y + (speed_kms * dt_sec * math.cos(dir_rad))
-                
+
                 cos_lat = math.cos(math.radians(ref_lat))
                 lat = ref_lat + (current_y / R) * (180.0 / math.pi)
-                lon = ref_lon + (current_x / (R * cos_lat)) * (180.0 / math.pi) if cos_lat > 0 else ref_lon
-                
+                lon = (
+                    ref_lon + (current_x / (R * cos_lat)) * (180.0 / math.pi)
+                    if cos_lat > 0
+                    else ref_lon
+                )
+
                 lat += random.uniform(-0.01, 0.01)
                 lon += random.uniform(-0.01, 0.01)
-                
+
                 hass.bus.async_fire(
                     EVENT_STRIKE_CALCULATED,
                     {
@@ -120,12 +124,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         "longitude": float(lon),
                     },
                 )
-                _LOGGER.info("Simulated storm strike %d/%d at coords: %f, %f", i + 1, strike_count, lat, lon)
-                
+                _LOGGER.info(
+                    "Simulated storm strike %d/%d at coords: %f, %f", i + 1, strike_count, lat, lon
+                )
+
                 if i < strike_count - 1:
                     await asyncio.sleep(interval_sec)
 
-        hass.async_create_background_task(run_storm(), "weatherflow_lightning_trilateration_storm_simulation")
+        hass.async_create_background_task(
+            run_storm(), "weatherflow_lightning_trilateration_storm_simulation"
+        )
 
     if not hass.services.has_service(DOMAIN, "simulate_strike"):
         hass.services.async_register(
@@ -198,17 +206,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.http.register_view(WeatherFlowVectorDataView(coordinator))
 
     _LOGGER.debug("Forwarding config entry setups to platforms: ['geo_location', 'sensor']")
-    await hass.config_entries.async_forward_entry_setups(
-        entry, ["geo_location", "sensor"]
-    )
+    await hass.config_entries.async_forward_entry_setups(entry, ["geo_location", "sensor"])
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(
-        entry, ["geo_location", "sensor"]
-    )
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["geo_location", "sensor"])
     if unload_ok:
         coordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coordinator.async_stop()
@@ -240,9 +244,7 @@ class TempestStrikeCoordinator:
 
         self.primary_station = str(entry.data.get(CONF_PRIMARY_STATION, "")).strip()
         neighbor_raw = str(entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
-        self.neighbor_stations = [
-            s.strip() for s in neighbor_raw.split(",") if s.strip()
-        ]
+        self.neighbor_stations = [s.strip() for s in neighbor_raw.split(",") if s.strip()]
         self.api_token = str(entry.data.get(CONF_API_TOKEN, "")).strip()
         self.all_stations = [self.primary_station] + self.neighbor_stations
 
@@ -436,7 +438,7 @@ class TempestStrikeCoordinator:
                             if val_str.isdigit():
                                 station_id = val_str
                                 break
-                    
+
                     if not station_id:
                         continue
 
@@ -447,22 +449,22 @@ class TempestStrikeCoordinator:
                                 if len(identifier) == 2 and identifier[0] == entry.domain:
                                     val = str(identifier[1]).strip()
                                     self.device_to_station[val] = station_id
-                                    
+
                                     # Strip prefix to map serial/ID without prefix
                                     clean_val = val
                                     for prefix in ("ST-", "HB-"):
                                         if clean_val.startswith(prefix):
-                                            clean_val = clean_val[len(prefix):]
+                                            clean_val = clean_val[len(prefix) :]
                                     if clean_val:
                                         self.device_to_station[clean_val] = station_id
-                                        
+
                             if device_entry.name:
                                 name_str = str(device_entry.name).strip()
                                 self.device_to_station[name_str] = station_id
                                 clean_name = name_str
                                 for prefix in ("ST-", "HB-"):
                                     if clean_name.startswith(prefix):
-                                        clean_name = clean_name[len(prefix):]
+                                        clean_name = clean_name[len(prefix) :]
                                 if clean_name:
                                     self.device_to_station[clean_name] = station_id
         except Exception as e:
@@ -473,11 +475,11 @@ class TempestStrikeCoordinator:
         if self.api_token:
             user_stations_url = "https://swd.weatherflow.com/swd/rest/stations"
             params = {"token": self.api_token}
-            _LOGGER.debug("Fetching user stations list from REST API via URL: %s", user_stations_url)
+            _LOGGER.debug(
+                "Fetching user stations list from REST API via URL: %s", user_stations_url
+            )
             try:
-                async with session.get(
-                    user_stations_url, params=params, timeout=10
-                ) as response:
+                async with session.get(user_stations_url, params=params, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
                         _LOGGER.debug("User stations list response: %s", data)
@@ -498,7 +500,7 @@ class TempestStrikeCoordinator:
                                 serial = str(device.get("serial_number", ""))
                                 dev_type = device.get("device_type")
 
-                                is_hub = (dev_type == "HB" or serial.startswith("HB"))
+                                is_hub = dev_type == "HB" or serial.startswith("HB")
 
                                 if dev_id and dev_id.isdigit():
                                     self.device_to_station[dev_id] = station_id
@@ -526,7 +528,7 @@ class TempestStrikeCoordinator:
                                         clean_serial = serial
                                         for prefix in ("ST-", "HB-"):
                                             if clean_serial.startswith(prefix):
-                                                clean_serial = clean_serial[len(prefix):]
+                                                clean_serial = clean_serial[len(prefix) :]
                                         if clean_serial:
                                             self.device_to_station[clean_serial] = station_id
                                             self.station_coords[clean_serial] = (
@@ -555,7 +557,10 @@ class TempestStrikeCoordinator:
 
         # 3. For any remaining station ID, query the public/metadata stations endpoint if not already resolved.
         # If the API token is missing, we skip and use the fallback.
-        _LOGGER.debug("Resolving remaining station metadata from public REST API. Active stations list: %s", self.all_stations)
+        _LOGGER.debug(
+            "Resolving remaining station metadata from public REST API. Active stations list: %s",
+            self.all_stations,
+        )
         if not self.api_token:
             # Fallback mapping: assume device_id is station_id
             for station in self.all_stations:
@@ -572,7 +577,11 @@ class TempestStrikeCoordinator:
             if station_id in self.station_coords and any(
                 sid == station_id for sid in self.device_to_station.values()
             ):
-                _LOGGER.debug("Station %s is already resolved (coords: %s). Skipping query.", station_id, self.station_coords[station_id])
+                _LOGGER.debug(
+                    "Station %s is already resolved (coords: %s). Skipping query.",
+                    station_id,
+                    self.station_coords[station_id],
+                )
                 continue
 
             url = f"https://swd.weatherflow.com/swd/rest/stations/{station_id}"
@@ -598,7 +607,7 @@ class TempestStrikeCoordinator:
                                 dev_type = device.get("device_type")
                                 serial = str(device.get("serial_number", ""))
 
-                                is_hub = (dev_type == "HB" or serial.startswith("HB"))
+                                is_hub = dev_type == "HB" or serial.startswith("HB")
 
                                 if dev_id and dev_id.isdigit():
                                     self.device_to_station[dev_id] = station_id
@@ -616,14 +625,12 @@ class TempestStrikeCoordinator:
                                         clean_serial = serial
                                         for prefix in ("ST-", "HB-"):
                                             if clean_serial.startswith(prefix):
-                                                clean_serial = clean_serial[len(prefix):]
+                                                clean_serial = clean_serial[len(prefix) :]
                                         if clean_serial:
                                             self.device_to_station[clean_serial] = station_id
                     else:
                         # Log 404 as info since it could be an unresolved device ID or serial number
-                        log_level = (
-                            logging.INFO if response.status == 404 else logging.WARNING
-                        )
+                        log_level = logging.INFO if response.status == 404 else logging.WARNING
                         _LOGGER.log(
                             log_level,
                             "Could not resolve metadata for ID/station %s: HTTP %d",
@@ -646,13 +653,13 @@ class TempestStrikeCoordinator:
 
         # 5. Deduplicate all_stations to remove duplicate station IDs after device-to-station resolution
         self.all_stations = list(dict.fromkeys(self.all_stations))
-        
+
         # Also map self.primary_station and self.neighbor_stations if they were configured as device serials/IDs
         if self.primary_station in self.device_to_station:
             self.primary_station = self.device_to_station[self.primary_station]
-        self.neighbor_stations = list(dict.fromkeys([
-            self.device_to_station.get(s, s) for s in self.neighbor_stations
-        ]))
+        self.neighbor_stations = list(
+            dict.fromkeys([self.device_to_station.get(s, s) for s in self.neighbor_stations])
+        )
 
         _LOGGER.debug(
             "Deduplicated active stations list: %s",
@@ -711,11 +718,11 @@ class TempestStrikeCoordinator:
             return
 
         ref_lat, ref_lon = primary_coords
-        
+
         # Define grid dimensions: 15x15 points spanning 40km
         grid_size = 15
         span_km = 40.0
-        
+
         # Calculate latitude and longitude ranges
         lat_span = span_km / 111.1
         cos_lat = math.cos(math.radians(ref_lat))
@@ -731,10 +738,7 @@ class TempestStrikeCoordinator:
                 lons.append(f"{lon:.5f}")
 
         url = "https://api.open-meteo.com/v1/elevation"
-        params = {
-            "latitude": ",".join(lats),
-            "longitude": ",".join(lons)
-        }
+        params = {"latitude": ",".join(lats), "longitude": ",".join(lons)}
 
         try:
             session = async_get_clientsession(self.hass)
@@ -795,14 +799,16 @@ class TempestStrikeCoordinator:
         headers = {
             "User-Agent": "HomeAssistantWeatherFlowLightningTrilateration/1.0 (github.com/JohNan/homeassistant-weatherflow-lightning-trilateration)",
         }
-        
+
         session = async_get_clientsession(self.hass)
         success = False
 
         for url in urls:
             try:
                 _LOGGER.info("Querying OSM Overpass API for vector data from %s...", url)
-                async with session.post(url, data={"data": query}, headers=headers, timeout=30) as response:
+                async with session.post(
+                    url, data={"data": query}, headers=headers, timeout=30
+                ) as response:
                     if response.status == 200:
                         raw_data = await response.json()
                         processed = self._process_vector_data(raw_data)
@@ -813,7 +819,9 @@ class TempestStrikeCoordinator:
                         success = True
                         break
                     else:
-                        _LOGGER.warning("Failed to query Overpass API at %s: HTTP %d", url, response.status)
+                        _LOGGER.warning(
+                            "Failed to query Overpass API at %s: HTTP %d", url, response.status
+                        )
             except Exception as e:
                 _LOGGER.warning("Error fetching vector data from %s: %s", url, e)
 
@@ -847,27 +855,39 @@ class TempestStrikeCoordinator:
                 while extended:
                     extended = False
                     for i, seg in enumerate(unmerged):
-                        if abs(seg[0][0] - current[-1][0]) < 1e-7 and abs(seg[0][1] - current[-1][1]) < 1e-7:
+                        if (
+                            abs(seg[0][0] - current[-1][0]) < 1e-7
+                            and abs(seg[0][1] - current[-1][1]) < 1e-7
+                        ):
                             current.extend(seg[1:])
                             unmerged.pop(i)
                             extended = True
                             break
-                        elif abs(seg[-1][0] - current[-1][0]) < 1e-7 and abs(seg[-1][1] - current[-1][1]) < 1e-7:
+                        elif (
+                            abs(seg[-1][0] - current[-1][0]) < 1e-7
+                            and abs(seg[-1][1] - current[-1][1]) < 1e-7
+                        ):
                             current.extend(seg[:-1][::-1])
                             unmerged.pop(i)
                             extended = True
                             break
-                    
+
                     if extended:
                         continue
 
                     for i, seg in enumerate(unmerged):
-                        if abs(seg[-1][0] - current[0][0]) < 1e-7 and abs(seg[-1][1] - current[0][1]) < 1e-7:
+                        if (
+                            abs(seg[-1][0] - current[0][0]) < 1e-7
+                            and abs(seg[-1][1] - current[0][1]) < 1e-7
+                        ):
                             current = seg[:-1] + current
                             unmerged.pop(i)
                             extended = True
                             break
-                        elif abs(seg[0][0] - current[0][0]) < 1e-7 and abs(seg[0][1] - current[0][1]) < 1e-7:
+                        elif (
+                            abs(seg[0][0] - current[0][0]) < 1e-7
+                            and abs(seg[0][1] - current[0][1]) < 1e-7
+                        ):
                             current = seg[1:][::-1] + current
                             unmerged.pop(i)
                             extended = True
@@ -879,7 +899,7 @@ class TempestStrikeCoordinator:
         for elem in elements:
             tags = elem.get("tags", {})
             elem_type = elem.get("type")
-            
+
             is_water = tags.get("natural") == "water" or tags.get("waterway") == "riverbank"
             is_forest = tags.get("landuse") == "forest" or tags.get("natural") == "wood"
 
@@ -887,7 +907,7 @@ class TempestStrikeCoordinator:
                 continue
 
             geometries_to_process = []
-            
+
             if elem_type == "way":
                 geom = elem.get("geometry", [])
                 if geom and len(geom) >= 3:
@@ -926,10 +946,7 @@ class TempestStrikeCoordinator:
                 elif is_forest:
                     forest_features.append(feature)
 
-        return {
-            "water": water_features[:200],
-            "forest": forest_features[:200]
-        }
+        return {"water": water_features[:200], "forest": forest_features[:200]}
 
     async def async_stop(self) -> None:
         """Stop the WebSocket listener task."""
@@ -950,9 +967,7 @@ class TempestStrikeCoordinator:
             for station in nearby_stations:
                 if station not in self.all_stations:
                     self.all_stations.append(station)
-                    _LOGGER.info(
-                        "Added nearby public station %s to calculations", station
-                    )
+                    _LOGGER.info("Added nearby public station %s to calculations", station)
         except Exception as e:
             _LOGGER.exception("Failed to discover nearby public stations: %s", e)
 
@@ -964,9 +979,7 @@ class TempestStrikeCoordinator:
 
         # Create SSL context in executor to avoid blocking call in event loop
         try:
-            ssl_context = await self.hass.async_add_executor_job(
-                ssl.create_default_context
-            )
+            ssl_context = await self.hass.async_add_executor_job(ssl.create_default_context)
         except Exception as e:
             _LOGGER.error("Failed to create SSL context: %s", e)
             ssl_context = None
@@ -1004,13 +1017,9 @@ class TempestStrikeCoordinator:
                             message_data = json.loads(message)
                             self._process_incoming_message(message_data)
                         except json.JSONDecodeError:
-                            _LOGGER.warning(
-                                "Received invalid JSON message from WebSocket"
-                            )
+                            _LOGGER.warning("Received invalid JSON message from WebSocket")
                         except Exception as e:
-                            _LOGGER.exception(
-                                "Error processing WebSocket message: %s", e
-                            )
+                            _LOGGER.exception("Error processing WebSocket message: %s", e)
 
             except asyncio.CancelledError:
                 _LOGGER.info("WebSocket listener task cancelled")
@@ -1062,9 +1071,7 @@ class TempestStrikeCoordinator:
             offset_lon = dist_offset * math.cos(angle)
             return ref_lat + offset_lat, ref_lon + offset_lon
 
-    def _calculate_distance(
-        self, lat1: float, lon1: float, lat2: float, lon2: float
-    ) -> float:
+    def _calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """Calculate the great-circle distance between two coordinates (in km)."""
         R = 6371.0
         lat1_rad = math.radians(lat1)
@@ -1115,7 +1122,12 @@ class TempestStrikeCoordinator:
 
         timestamp = int(evt[0])
         distance = float(evt[1])
-        _LOGGER.debug("Parsed strike event: device_id=%s, timestamp=%d, distance=%f", device_id, timestamp, distance)
+        _LOGGER.debug(
+            "Parsed strike event: device_id=%s, timestamp=%d, distance=%f",
+            device_id,
+            timestamp,
+            distance,
+        )
 
         # Map device_id to station_id
         station_id = self.device_to_station.get(device_id, device_id)
@@ -1145,12 +1157,17 @@ class TempestStrikeCoordinator:
                 if coords:
                     strike_events.append((coords[0], coords[1], dist))
 
-            _LOGGER.debug("Clearing bucket %d from buffer and invoking trilateration calculations", matched_timestamp)
+            _LOGGER.debug(
+                "Clearing bucket %d from buffer and invoking trilateration calculations",
+                matched_timestamp,
+            )
             # Evict from buffer to prevent reprocessing
             del self.strike_buffer[matched_timestamp]
 
             if len(strike_events) >= 3:
-                _LOGGER.debug("Invoking trilateration with coordinates/distances: %s", strike_events)
+                _LOGGER.debug(
+                    "Invoking trilateration with coordinates/distances: %s", strike_events
+                )
                 self._calculate_trilateration(strike_events)
 
         # Cleanup old entries to prevent memory leak
@@ -1189,9 +1206,7 @@ class TempestStrikeCoordinator:
 
         det = A * E - B * D
         if abs(det) < 1e-9:
-            _LOGGER.warning(
-                "Collinear station arrangement or invalid distance data detected."
-            )
+            _LOGGER.warning("Collinear station arrangement or invalid distance data detected.")
             return
 
         x = (C * E - B * F) / det
@@ -1203,10 +1218,7 @@ class TempestStrikeCoordinator:
         calculated_latitude = lat1 + math.degrees(delta_lat)
         calculated_longitude = lon1 + math.degrees(delta_lon)
 
-        if not (
-            -90.0 <= calculated_latitude <= 90.0
-            and -180.0 <= calculated_longitude <= 180.0
-        ):
+        if not (-90.0 <= calculated_latitude <= 90.0 and -180.0 <= calculated_longitude <= 180.0):
             _LOGGER.warning(
                 "Calculated strike location coords out of bounds: lat=%f, lon=%f",
                 calculated_latitude,
@@ -1249,11 +1261,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
     existing_item = None
     if hasattr(resources, "async_items"):
         for item in resources.async_items():
-            item_url = (
-                item.get("url")
-                if isinstance(item, dict)
-                else getattr(item, "url", None)
-            )
+            item_url = item.get("url") if isinstance(item, dict) else getattr(item, "url", None)
             if item_url and item_url.startswith(base_url):
                 existing_item = item
                 break

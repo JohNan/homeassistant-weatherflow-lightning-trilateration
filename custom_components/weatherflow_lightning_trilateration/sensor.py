@@ -4,7 +4,7 @@ import logging
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -16,7 +16,10 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up the sensor platform."""
-    _LOGGER.debug("Setting up WeatherFlow Lightning Trilateration sensor platform for entry: %s", entry.entry_id)
+    _LOGGER.debug(
+        "Setting up WeatherFlow Lightning Trilateration sensor platform for entry: %s",
+        entry.entry_id,
+    )
     coordinator = hass.data[DOMAIN][entry.entry_id]
     sensor = WeatherFlowTrilaterationSensor(coordinator, entry)
     async_add_entities([sensor])
@@ -33,7 +36,11 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
         self._attr_name = "WeatherFlow Lightning Trilateration Stations"
         self._attr_unique_id = f"{entry.entry_id}_stations"
         self._attr_icon = "mdi:lightning-bolt"
-        _LOGGER.debug("Initialized WeatherFlowTrilaterationSensor: name=%s, unique_id=%s", self._attr_name, self._attr_unique_id)
+        _LOGGER.debug(
+            "Initialized WeatherFlowTrilaterationSensor: name=%s, unique_id=%s",
+            self._attr_name,
+            self._attr_unique_id,
+        )
 
     @property
     def state(self) -> int:
@@ -82,7 +89,10 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         """Call when entity is added to hass."""
-        _LOGGER.debug("WeatherFlowTrilaterationSensor successfully added to HASS: unique_id=%s", self.unique_id)
+        _LOGGER.debug(
+            "WeatherFlowTrilaterationSensor successfully added to HASS: unique_id=%s",
+            self.unique_id,
+        )
         self._coordinator.async_add_listener(self.async_write_ha_state)
 
     async def async_will_remove_from_hass(self) -> None:

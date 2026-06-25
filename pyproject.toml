@@ -1,0 +1,30 @@
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+skip-string-normalization = false
+extend-exclude = '''
+(
+  /node_modules
+  | /\.venv
+  | /dist
+)
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+skip = ["node_modules", ".venv", "dist"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [
+    "node_modules",
+    ".venv",
+    "dist"
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]

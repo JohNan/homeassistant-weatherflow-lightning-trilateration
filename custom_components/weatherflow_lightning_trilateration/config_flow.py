@@ -2,7 +2,6 @@
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import CONF_API_TOKEN, CONF_NEIGHBOR_STATIONS, CONF_PRIMARY_STATION, DOMAIN
@@ -26,9 +25,7 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Resolve if it looks like a serial number/device ID (more than 6 digits)
             if primary.isdigit() and len(primary) > 6:
                 if token:
-                    resolved = await self._async_resolve_serial_to_station(
-                        primary, token
-                    )
+                    resolved = await self._async_resolve_serial_to_station(primary, token)
                     if resolved:
                         user_input[CONF_PRIMARY_STATION] = resolved
                         primary = resolved
@@ -49,11 +46,7 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Pre-resolve detected station ID if it's a serial number and we have a token
         default_primary = ""
         if detected_station:
-            if (
-                detected_station.isdigit()
-                and len(detected_station) > 6
-                and default_token
-            ):
+            if detected_station.isdigit() and len(detected_station) > 6 and default_token:
                 resolved = await self._async_resolve_serial_to_station(
                     detected_station, default_token
                 )
@@ -61,9 +54,7 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 default_primary = detected_station
         else:
-            default_primary = (
-                f"{self.hass.config.latitude},{self.hass.config.longitude}"
-            )
+            default_primary = f"{self.hass.config.latitude},{self.hass.config.longitude}"
 
         data_schema = vol.Schema(
             {
@@ -120,9 +111,7 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             return val_str
         return ""
 
-    async def _async_resolve_serial_to_station(
-        self, serial: str, token: str
-    ) -> str | None:
+    async def _async_resolve_serial_to_station(self, serial: str, token: str) -> str | None:
         """Resolve a device serial number (e.g., 00172794) to a station ID via WeatherFlow API."""
         url = "https://swd.weatherflow.com/swd/rest/stations"
         params = {"token": token}

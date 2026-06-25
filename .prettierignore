@@ -1,0 +1,5 @@
+node_modules/
+dist/
+custom_components/weatherflow_lightning_trilateration/dist/
+.venv/
+.ruff_cache/

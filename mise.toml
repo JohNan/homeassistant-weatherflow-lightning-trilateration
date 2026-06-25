@@ -12,9 +12,13 @@ description = "Validate structure and syntax of manifest, translation, and HACS 
 run = "python3 -c \"import json; [json.load(open(f)) for f in ('custom_components/weatherflow_lightning_trilateration/manifest.json', 'custom_components/weatherflow_lightning_trilateration/translations/en.json', 'hacs.json')]\""
 
 [tasks.validate-js]
-description = "Validate JavaScript card syntax"
-run = "node --check custom_components/weatherflow_lightning_trilateration/dist/weatherflow-lightning-card.js"
+description = "Validate JavaScript card syntax, linting, formatting, and build"
+run = "npm run lint && npm run format:check && npm run build"
+
+[tasks.test]
+description = "Run Python unit tests"
+run = "./.venv/bin/python -m pytest tests/"
 
 [tasks.all]
-description = "Run all validation checks"
-depends = ["lint", "validate-json", "validate-js"]
+description = "Run all validation checks and tests"
+depends = ["lint", "validate-json", "validate-js", "test"]
