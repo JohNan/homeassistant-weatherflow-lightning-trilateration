@@ -248,6 +248,11 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.renderer.dispose();
       this.renderer = null;
     }
+
+    if (this.wrapper && this.wrapper.parentNode) {
+      this.wrapper.parentNode.removeChild(this.wrapper);
+      this.wrapper = null;
+    }
     
     this.initialized = false;
   }
@@ -1509,7 +1514,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         transform: scale(1.2);
       }
     `;
-    this.shadowRoot.appendChild(style);
+    this.wrapper.appendChild(style);
 
     this.controls = document.createElement('div');
     this.controls.style.display = 'flex';
