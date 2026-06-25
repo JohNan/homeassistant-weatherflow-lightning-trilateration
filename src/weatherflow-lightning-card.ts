@@ -1,4 +1,15 @@
+declare global {
+  interface Window {
+    THREE: any;
+    customCards: any[];
+  }
+}
+
+declare const THREE: any;
+
 class WeatherFlowLightningCard extends HTMLElement {
+  [key: string]: any;
+
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -492,7 +503,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.resizeObserver.observe(this.container);
 
     // Start animation loop
-    this.animate();
+    this.animateLoop();
   }
 
   createGlowTexture() {
@@ -800,7 +811,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
         const tileUrl = `https://basemaps.cartocdn.com/dark_all/${zoom}/${x}/${y}.png`;
 
-        const p = new Promise((resolve) => {
+        const p = new Promise<void>((resolve) => {
           const img = new Image();
           img.crossOrigin = 'anonymous';
           img.onload = () => {
@@ -1422,9 +1433,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
   }
 
-  animate() {
+  animateLoop() {
     if (!this.initialized) return;
-    this.animationFrameId = requestAnimationFrame(() => this.animate());
+    this.animationFrameId = requestAnimationFrame(() => this.animateLoop());
 
     this.tickPlayback();
 
@@ -2096,6 +2107,8 @@ window.customCards.push({
 });
 
 class WeatherFlowLightningCardEditor extends HTMLElement {
+  [key: string]: any;
+
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
@@ -2107,51 +2120,51 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       this.render();
       this._initializedEditor = true;
     } else {
-      const heightInput = this.shadowRoot.getElementById('height');
+      const heightInput = this.shadowRoot.getElementById('height') as HTMLInputElement;
       if (heightInput) {
         heightInput.value = this._config.height || '350px';
       }
-      const zoomInput = this.shadowRoot.getElementById('zoom_level');
+      const zoomInput = this.shadowRoot.getElementById('zoom_level') as HTMLInputElement;
       if (zoomInput) {
         zoomInput.value = this._config.zoom_level !== undefined ? this._config.zoom_level : '18.0';
       }
-      const showGridInput = this.shadowRoot.getElementById('show_grid');
+      const showGridInput = this.shadowRoot.getElementById('show_grid') as HTMLInputElement;
       if (showGridInput) {
         showGridInput.checked = this._config.show_grid !== false;
       }
-      const showMapInput = this.shadowRoot.getElementById('show_map');
+      const showMapInput = this.shadowRoot.getElementById('show_map') as HTMLInputElement;
       if (showMapInput) {
         showMapInput.checked = this._config.show_map !== false;
       }
-      const showRingsInput = this.shadowRoot.getElementById('show_rings');
+      const showRingsInput = this.shadowRoot.getElementById('show_rings') as HTMLInputElement;
       if (showRingsInput) {
         showRingsInput.checked = this._config.show_rings !== false;
       }
-      const showHeatmapInput = this.shadowRoot.getElementById('show_heatmap');
+      const showHeatmapInput = this.shadowRoot.getElementById('show_heatmap') as HTMLInputElement;
       if (showHeatmapInput) {
         showHeatmapInput.checked = this._config.show_heatmap !== false;
       }
-      const autoOrbitInput = this.shadowRoot.getElementById('auto_orbit');
+      const autoOrbitInput = this.shadowRoot.getElementById('auto_orbit') as HTMLInputElement;
       if (autoOrbitInput) {
         autoOrbitInput.checked = this._config.auto_orbit !== false;
       }
-      const showWeatherInput = this.shadowRoot.getElementById('show_weather');
+      const showWeatherInput = this.shadowRoot.getElementById('show_weather') as HTMLInputElement;
       if (showWeatherInput) {
         showWeatherInput.checked = this._config.show_weather !== false;
       }
-      const showDayNightInput = this.shadowRoot.getElementById('show_daynight');
+      const showDayNightInput = this.shadowRoot.getElementById('show_daynight') as HTMLInputElement;
       if (showDayNightInput) {
         showDayNightInput.checked = this._config.show_daynight !== false;
       }
-      const minBrightnessInput = this.shadowRoot.getElementById('min_brightness');
+      const minBrightnessInput = this.shadowRoot.getElementById('min_brightness') as HTMLInputElement;
       if (minBrightnessInput) {
         minBrightnessInput.value = this._config.min_brightness !== undefined ? this._config.min_brightness : '0.8';
       }
-      const elevationScaleInput = this.shadowRoot.getElementById('elevation_scale');
+      const elevationScaleInput = this.shadowRoot.getElementById('elevation_scale') as HTMLInputElement;
       if (elevationScaleInput) {
         elevationScaleInput.value = this._config.elevation_scale !== undefined ? this._config.elevation_scale : '1.5';
       }
-      const show3DFeaturesInput = this.shadowRoot.getElementById('show_3d_features');
+      const show3DFeaturesInput = this.shadowRoot.getElementById('show_3d_features') as HTMLInputElement;
       if (show3DFeaturesInput) {
         show3DFeaturesInput.checked = this._config.show_3d_features === true;
       }
@@ -2384,3 +2397,5 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
 }
 
 customElements.define('weatherflow-lightning-card-editor', WeatherFlowLightningCardEditor);
+
+export {};
