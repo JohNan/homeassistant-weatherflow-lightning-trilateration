@@ -2237,11 +2237,13 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       if (show3DFeaturesInput) {
         show3DFeaturesInput.checked = this._config.show_3d_features === true;
       }
+      this._syncEntityPicker();
     }
   }
 
   set hass(hass) {
     this._hass = hass;
+    this._syncEntityPicker();
   }
 
   render() {
@@ -2342,6 +2344,19 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
         <div class="section-header">General Settings</div>
         
         <div class="paper-input-container">
+          <label>Instance</label>
+          <ha-entity-picker
+            id="entity_id_picker"
+            allow-custom-entity
+            style="display:block;"
+          ></ha-entity-picker>
+          <div style="font-size:11px;color:var(--secondary-text-color,#727272);margin-top:2px;">Only shows WeatherFlow trilateration station sensors</div>
+        </div>
+        <div class="paper-input-container">
+          <label for="title">Card Title (optional)</label>
+          <input type="text" id="title" value="${this._config.title || ''}">
+        </div>
+        <div class="paper-input-container">
           <label for="height">Card Height (e.g. 350px)</label>
           <input type="text" id="height" value="${this._config.height || '350px'}">
         </div>
@@ -2429,6 +2444,15 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
     this.shadowRoot.querySelectorAll('input[type="text"]').forEach((input) => {
       input.addEventListener('input', (e) => this.textChanged(e));
     });
+
+    const picker = this.shadowRoot.getElementById('entity_id_picker') as any;
+    if (picker) {
+      picker.addEventListener('value-changed', (e: CustomEvent) => {
+        const val: string | null = e.detail && e.detail.value != null ? e.detail.value : null;
+        this._onEntityPicked(val);
+      });
+    }
+    this._syncEntityPicker();
   }
 
   toggleChanged(e) {
@@ -2448,6 +2472,42 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       }
     }
     this.dispatchConfigChange(target.id, value);
+  }
+
+  _syncEntityPicker() {
+    if (!this.shadowRoot) return;
+    const picker = this.shadowRoot.getElementById('entity_id_picker') as any;
+    if (!picker) return;
+    picker.hass = this._hass;
+    // Filter to only weatherflow trilateration station sensors
+    picker.entityFilter = (entity: any) =>
+      entity.attributes &&
+      Array.isArray(entity.attributes.stations) &&
+      entity.attributes.icon === 'mdi:lightning-bolt';
+    const current = this._config && this._config.entity_id ? this._config.entity_id : null;
+    if (picker.value !== current) {
+      picker.value = current;
+    }
+  }
+
+  _onEntityPicked(entityId: string | null) {
+    // Auto-derive entry_id from the sensor unique_id pattern: sensor.<entry_id>_stations
+    let entry_id: string | undefined;
+    if (entityId && entityId.startsWith('sensor.') && entityId.endsWith('_stations')) {
+      entry_id = entityId.slice('sensor.'.length, -'_stations'.length);
+    }
+    const newConfig = {
+      ...this._config,
+      entity_id: entityId || undefined,
+      entry_id: entry_id || undefined,
+    };
+    this.dispatchEvent(
+      new CustomEvent('config-changed', {
+        detail: { config: newConfig },
+        bubbles: true,
+        composed: true,
+      })
+    );
   }
 
   dispatchConfigChange(key, value) {
