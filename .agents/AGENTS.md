@@ -23,7 +23,8 @@ This workspace represents a Home Assistant custom integration codebase. All agen
 - **Workflow for all card changes:**
   1. Edit `src/weatherflow-lightning-card.ts`.
   2. Run `npm run build` from the repo root to regenerate the JS.
-  3. Commit both the `.ts` source and the rebuilt `.js` together in the same commit.
+  3. Update the **cache buster** in `_async_register_lovelace_resource` inside `__init__.py`: set `url = f"{base_url}?v=<new-git-short-hash>"` to the new HEAD commit hash so browsers pick up the rebuilt JS.
+  4. Commit the `.ts` source, the rebuilt `.js`, and the updated `__init__.py` together in the same commit.
 - **Syntax Validation:** After building, verify with `node --check custom_components/weatherflow_lightning_trilateration/dist/weatherflow-lightning-card.js` before committing.
 - **Geographic Terrain Alignment:** Ensure all visual elements (weather stations, concentric range rings, crosshair lines, strike targets, and heatmap indicators) sample the terrain altitude via `getTerrainHeight(x, z)` to prevent clipping or floating above the displaced 3D mesh.
 - **WebGL Memory Management:** Dispose of materials and geometries properly (`material.dispose()`, `geometry.dispose()`) when transient or dynamic meshes/sprites (such as volumetric glows or heatmap points) are evicted from the scene to prevent memory leaks.
