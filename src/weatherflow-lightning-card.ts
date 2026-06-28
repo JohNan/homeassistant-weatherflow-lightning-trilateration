@@ -1928,20 +1928,6 @@ class WeatherFlowLightningCard extends HTMLElement {
     this._hass = hass;
     if (!hass || !this.initialized) return;
 
-    // Load/Cache CartoDB Dark Matter map texture
-    const refLat = hass.config.latitude;
-    const refLon = hass.config.longitude;
-    if (this.lastRefLat !== refLat || this.lastRefLon !== refLon) {
-      this.lastRefLat = refLat;
-      this.lastRefLon = refLon;
-      this.loadMapTexture(refLat, refLon);
-      this.vectorDataLoaded = false;
-    }
-
-    if (this.config.show_3d_features && !this.vectorDataLoading && !this.vectorDataLoaded) {
-      this.loadVectorData(refLat, refLon);
-    }
-
     // Find the station sensor
     const stationsSensorId =
       Object.keys(hass.states).find(
@@ -1954,6 +1940,37 @@ class WeatherFlowLightningCard extends HTMLElement {
       Object.keys(hass.states).find(
         (key) => key.startsWith('sensor.') && hass.states[key].attributes.stations !== undefined
       );
+
+    let refLat = hass.config.latitude;
+    let refLon = hass.config.longitude;
+
+    if (stationsSensorId) {
+      const attrs = hass.states[stationsSensorId].attributes;
+      const stationsAttr = attrs.stations;
+      if (Array.isArray(stationsAttr)) {
+        const primaryStation = stationsAttr.find((st: any) => st.type === 'primary');
+        if (primaryStation && primaryStation.latitude !== undefined && primaryStation.longitude !== undefined) {
+          const latVal = parseFloat(primaryStation.latitude);
+          const lonVal = parseFloat(primaryStation.longitude);
+          if (!isNaN(latVal) && !isNaN(lonVal)) {
+            refLat = latVal;
+            refLon = lonVal;
+          }
+        }
+      }
+    }
+
+    // Load/Cache CartoDB Dark Matter map texture
+    if (this.lastRefLat !== refLat || this.lastRefLon !== refLon) {
+      this.lastRefLat = refLat;
+      this.lastRefLon = refLon;
+      this.loadMapTexture(refLat, refLon);
+      this.vectorDataLoaded = false;
+    }
+
+    if (this.config.show_3d_features && !this.vectorDataLoading && !this.vectorDataLoaded) {
+      this.loadVectorData(refLat, refLon);
+    }
 
     if (stationsSensorId) {
       // Process elevation grid updates first
