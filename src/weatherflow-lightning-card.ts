@@ -504,6 +504,11 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     // Start animation loop
     this.animateLoop();
+
+    if (this._hass) {
+      console.log('WeatherFlow Card: Re-applying cached state on init completion');
+      this.hass = this._hass;
+    }
   }
 
   createGlowTexture() {
@@ -1943,6 +1948,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     let refLat = hass.config.latitude;
     let refLon = hass.config.longitude;
+    console.log('WeatherFlow Card: Home coordinates:', refLat, refLon);
 
     if (stationsSensorId) {
       const attrs = hass.states[stationsSensorId].attributes;
@@ -1955,13 +1961,34 @@ class WeatherFlowLightningCard extends HTMLElement {
           if (!isNaN(latVal) && !isNaN(lonVal)) {
             refLat = latVal;
             refLon = lonVal;
+            console.log('WeatherFlow Card: Resolved primary station coordinate:', refLat, refLon);
+          } else {
+            console.warn(
+              'WeatherFlow Card: Parsed primary station coordinates are NaN:',
+              primaryStation.latitude,
+              primaryStation.longitude
+            );
           }
+        } else {
+          console.warn('WeatherFlow Card: No primary station found in stations list:', stationsAttr);
         }
+      } else {
+        console.warn('WeatherFlow Card: stationsAttr is not an array:', stationsAttr);
       }
+    } else {
+      console.warn('WeatherFlow Card: stationsSensorId not found');
     }
 
     // Load/Cache CartoDB Dark Matter map texture
     if (this.lastRefLat !== refLat || this.lastRefLon !== refLon) {
+      console.log(
+        'WeatherFlow Card: Reference coordinates changed from',
+        this.lastRefLat,
+        this.lastRefLon,
+        'to',
+        refLat,
+        refLon
+      );
       this.lastRefLat = refLat;
       this.lastRefLon = refLon;
       this.loadMapTexture(refLat, refLon);
@@ -2006,6 +2033,15 @@ class WeatherFlowLightningCard extends HTMLElement {
           }
         }
 
+        console.log(
+          'WeatherFlow Card: Stations changed status:',
+          stationsChanged,
+          'Current length:',
+          this.stations.length,
+          'New length:',
+          stationsAttr.length
+        );
+
         if (stationsChanged) {
           const R = 6371.0;
           const cosLat = Math.cos((refLat * Math.PI) / 180.0);
@@ -2022,16 +2058,32 @@ class WeatherFlowLightningCard extends HTMLElement {
               color = 0x10b981; // vibrant emerald green for local/primary
             else if (st.type === 'neighbor') color = 0x38bdf8; // sky blue for neighbors
 
+            console.log(
+              'WeatherFlow Card: Mapped station:',
+              st.id,
+              'type:',
+              st.type,
+              'lat:',
+              lat,
+              'lon:',
+              lon,
+              'to grid coords:',
+              gridX,
+              gridZ
+            );
+
             return {
               id: st.id,
               x: gridX,
               z: gridZ,
-              color: color
+              color: color,
+              type: st.type
             };
           });
 
           // Remove old meshes
           if (this.stationMeshes) {
+            console.log('WeatherFlow Card: Removing', this.stationMeshes.length, 'old meshes');
             this.stationMeshes.forEach((sm) => {
               this.scene.remove(sm.mesh);
             });
