@@ -11,13 +11,13 @@ import time
 
 import voluptuous as vol
 import websockets
-from websockets.connection import State as WsState
 from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from websockets.connection import State as WsState
 
 from .const import (
     CONF_API_TOKEN,
@@ -1518,6 +1518,7 @@ class WeatherFlowVectorDataView(HomeAssistantView):
         )
         if os.path.exists(cache_path):
             try:
+
                 def _read_cache() -> dict:
                     with open(cache_path, "r", encoding="utf-8") as f:
                         return json.load(f)
