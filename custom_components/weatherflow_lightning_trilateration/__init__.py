@@ -20,6 +20,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_API_TOKEN,
+    CONF_NAME,
     CONF_NEIGHBOR_STATIONS,
     CONF_PRIMARY_STATION,
     DOMAIN,
@@ -28,6 +29,11 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def event_key(entry_id: str) -> str:
+    """Return the scoped event key for a specific entry."""
+    return f"{EVENT_STRIKE_CALCULATED}_{entry_id}"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -43,19 +49,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Simulate a lightning strike by firing EVENT_STRIKE_CALCULATED."""
         latitude = service_call.data.get("latitude")
         longitude = service_call.data.get("longitude")
+        entry_id = service_call.data.get("entry_id")
 
         if latitude is None:
             latitude = hass.config.latitude + random.uniform(-0.15, 0.15)
         if longitude is None:
             longitude = hass.config.longitude + random.uniform(-0.15, 0.15)
 
-        hass.bus.async_fire(
-            EVENT_STRIKE_CALCULATED,
-            {
-                "latitude": float(latitude),
-                "longitude": float(longitude),
-            },
-        )
+        data = {
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+        }
+
+        if entry_id:
+            hass.bus.async_fire(event_key(entry_id), data)
+        else:
+            for eid in hass.data[DOMAIN]:
+                if eid == "_infra_registered" or eid == "_shared_ws":
+                    continue
+                hass.bus.async_fire(event_key(eid), data)
 
     # Register service for weather telemetry simulation
     async def async_simulate_weather(service_call) -> None:
@@ -64,13 +76,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         wind_direction = service_call.data.get("wind_direction")
         solar_radiation = service_call.data.get("solar_radiation")
         rain_rate = service_call.data.get("rain_rate")
+        entry_id = service_call.data.get("entry_id")
 
-        coordinator = None
-        for entry_id in list(hass.data[DOMAIN].keys()):
-            coordinator = hass.data[DOMAIN][entry_id]
-            break
+        coordinators = []
+        if entry_id:
+            coord = hass.data[DOMAIN].get(entry_id)
+            if coord:
+                coordinators.append(coord)
+        else:
+            for key, val in hass.data[DOMAIN].items():
+                if key not in ("_infra_registered", "_shared_ws") and isinstance(
+                    val, TempestStrikeCoordinator
+                ):
+                    coordinators.append(val)
 
-        if coordinator:
+        for coordinator in coordinators:
             if wind_speed is not None:
                 coordinator.wind_speed = float(wind_speed)
             if wind_direction is not None:
@@ -88,6 +108,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         speed_kmh = float(service_call.data.get("speed_kmh", 30.0))
         direction_deg = float(service_call.data.get("direction_deg", 45.0))
         interval_sec = int(service_call.data.get("interval_sec", 5))
+        entry_id = service_call.data.get("entry_id")
 
         async def run_storm():
             ref_lat = hass.config.latitude
@@ -117,13 +138,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 lat += random.uniform(-0.01, 0.01)
                 lon += random.uniform(-0.01, 0.01)
 
-                hass.bus.async_fire(
-                    EVENT_STRIKE_CALCULATED,
-                    {
-                        "latitude": float(lat),
-                        "longitude": float(lon),
-                    },
-                )
+                data = {
+                    "latitude": float(lat),
+                    "longitude": float(lon),
+                }
+
+                if entry_id:
+                    hass.bus.async_fire(event_key(entry_id), data)
+                else:
+                    for eid in hass.data[DOMAIN]:
+                        if eid == "_infra_registered" or eid == "_shared_ws":
+                            continue
+                        hass.bus.async_fire(event_key(eid), data)
+
                 _LOGGER.info(
                     "Simulated storm strike %d/%d at coords: %f, %f", i + 1, strike_count, lat, lon
                 )
@@ -144,6 +171,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 {
                     vol.Optional("latitude"): cv.latitude,
                     vol.Optional("longitude"): cv.longitude,
+                    vol.Optional("entry_id"): str,
                 }
             ),
         )
@@ -159,6 +187,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     vol.Optional("wind_direction"): vol.Coerce(float),
                     vol.Optional("solar_radiation"): vol.Coerce(float),
                     vol.Optional("rain_rate"): vol.Coerce(float),
+                    vol.Optional("entry_id"): str,
                 }
             ),
         )
@@ -174,36 +203,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     vol.Optional("speed_kmh"): vol.Coerce(float),
                     vol.Optional("direction_deg"): vol.Coerce(float),
                     vol.Optional("interval_sec"): vol.Coerce(int),
+                    vol.Optional("entry_id"): str,
                 }
             ),
         )
 
-    # Register static path for the custom Lovelace card
-    dist_dir = os.path.join(os.path.dirname(__file__), "dist")
-    await hass.http.async_register_static_paths(
-        [
-            StaticPathConfig(
-                "/weatherflow_lightning_trilateration",
-                dist_dir,
-                cache_headers=False,
-            )
-        ]
-    )
+    _infra_registered = hass.data[DOMAIN].get("_infra_registered", False)
+    if not _infra_registered:
+        # Register static path for the custom Lovelace card
+        dist_dir = os.path.join(os.path.dirname(__file__), "dist")
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    "/weatherflow_lightning_trilateration",
+                    dist_dir,
+                    cache_headers=False,
+                )
+            ]
+        )
 
-    # Register Lovelace resource automatically
-    async def _register_resource(event=None) -> None:
-        try:
-            await _async_register_lovelace_resource(hass)
-        except Exception as e:
-            _LOGGER.warning("Could not automatically register Lovelace resource: %s", e)
+        # Register Lovelace resource automatically
+        async def _register_resource(event=None) -> None:
+            try:
+                await _async_register_lovelace_resource(hass)
+            except Exception as e:
+                _LOGGER.warning("Could not automatically register Lovelace resource: %s", e)
 
-    if hass.is_running:
-        await _register_resource()
-    else:
-        hass.bus.async_listen_once("homeassistant_started", _register_resource)
+        if hass.is_running:
+            await _register_resource()
+        else:
+            hass.bus.async_listen_once("homeassistant_started", _register_resource)
 
-    # Register vector data HTTP view
-    hass.http.register_view(WeatherFlowVectorDataView(coordinator))
+        # Register vector data HTTP view
+        hass.http.register_view(WeatherFlowVectorDataView(hass))
+
+        hass.data[DOMAIN]["_infra_registered"] = True
 
     _LOGGER.debug("Forwarding config entry setups to platforms: ['geo_location', 'sensor']")
     await hass.config_entries.async_forward_entry_setups(entry, ["geo_location", "sensor"])
@@ -218,10 +252,168 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_stop()
 
         # Unregister service if there are no more active entries for DOMAIN
-        if not hass.data[DOMAIN]:
+        active_coordinators = [
+            v for k, v in hass.data[DOMAIN].items() if k not in ("_infra_registered", "_shared_ws")
+        ]
+        if not active_coordinators:
+            hass.data[DOMAIN]["_infra_registered"] = False
             if hass.services.has_service(DOMAIN, "simulate_strike"):
                 hass.services.async_remove(DOMAIN, "simulate_strike")
     return unload_ok
+
+
+class SharedWebSocketSession:
+    """Manages a shared WebSocket connection for an API token."""
+
+    def __init__(self, hass: HomeAssistant, api_token: str) -> None:
+        """Initialize the shared websocket session."""
+        self.hass = hass
+        self.api_token = api_token
+        self.coordinators: list[TempestStrikeCoordinator] = []
+        self._listener_task = None
+        self._running = False
+        self._websocket = None
+
+    def register(self, coordinator: "TempestStrikeCoordinator") -> None:
+        """Register a coordinator with the shared session."""
+        if coordinator not in self.coordinators:
+            self.coordinators.append(coordinator)
+
+        if self._websocket and not self._websocket.closed:
+            self.hass.async_create_task(self._send_listen_start_for_coordinator(coordinator))
+
+        if not self._running:
+            self._running = True
+            self._listener_task = self.hass.async_create_background_task(
+                self._async_listen_loop(),
+                name=f"weatherflow_trilateration_shared_ws_{self.api_token[:4] if self.api_token else 'default'}",
+            )
+
+    async def deregister(self, coordinator: "TempestStrikeCoordinator") -> None:
+        """Deregister a coordinator from the shared session."""
+        if coordinator in self.coordinators:
+            self.coordinators.remove(coordinator)
+            if self._websocket and not self._websocket.closed:
+                await self._send_listen_stop_for_coordinator(coordinator)
+
+        if not self.coordinators:
+            await self.async_stop()
+
+    async def async_stop(self) -> None:
+        """Stop the shared websocket session."""
+        self._running = False
+        if self._listener_task:
+            self._listener_task.cancel()
+            try:
+                await self._listener_task
+            except asyncio.CancelledError:
+                pass
+            self._listener_task = None
+
+        _shared_ws = self.hass.data[DOMAIN].get("_shared_ws", {})
+        if self.api_token in _shared_ws:
+            del _shared_ws[self.api_token]
+
+    async def _send_listen_start_for_coordinator(
+        self, coordinator: "TempestStrikeCoordinator"
+    ) -> None:
+        """Send listen_start commands for all devices of a coordinator."""
+        if not self._websocket or self._websocket.closed:
+            return
+
+        for device_id in coordinator.device_ids:
+            if not device_id.strip().isdigit():
+                continue
+            sub_msg = {
+                "type": "listen_start",
+                "device_id": int(device_id),
+                "id": f"sub_{device_id}",
+            }
+            try:
+                await self._websocket.send(json.dumps(sub_msg))
+                _LOGGER.info("Subscribed to device: %s via shared WS", device_id)
+            except Exception as e:
+                _LOGGER.error("Failed to send listen_start for %s: %s", device_id, e)
+
+    async def _send_listen_stop_for_coordinator(
+        self, coordinator: "TempestStrikeCoordinator"
+    ) -> None:
+        """Send listen_stop commands for all devices of a coordinator."""
+        if not self._websocket or self._websocket.closed:
+            return
+
+        for device_id in coordinator.device_ids:
+            if not device_id.strip().isdigit():
+                continue
+            sub_msg = {
+                "type": "listen_stop",
+                "device_id": int(device_id),
+                "id": f"unsub_{device_id}",
+            }
+            try:
+                await self._websocket.send(json.dumps(sub_msg))
+                _LOGGER.info("Unsubscribed from device: %s via shared WS", device_id)
+            except Exception as e:
+                _LOGGER.error("Failed to send listen_stop for %s: %s", device_id, e)
+
+    async def _async_listen_loop(self) -> None:
+        """Handle the infinite WebSocket connection loop."""
+        try:
+            ssl_context = await self.hass.async_add_executor_job(ssl.create_default_context)
+        except Exception as e:
+            _LOGGER.error("Failed to create SSL context: %s", e)
+            ssl_context = None
+
+        retry_delay = 5
+        while self._running:
+            try:
+                ws_url = WS_ENDPOINT
+                if self.api_token:
+                    ws_url = f"{WS_ENDPOINT}?token={self.api_token}"
+
+                _LOGGER.info(
+                    "Connecting to shared Tempest WebSocket: %s",
+                    ws_url.replace(self.api_token, "***") if self.api_token else ws_url,
+                )
+                async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
+                    self._websocket = websocket
+                    retry_delay = 5
+
+                    for coordinator in self.coordinators:
+                        await self._send_listen_start_for_coordinator(coordinator)
+
+                    _LOGGER.info("Shared Tempest WebSocket connection established successfully")
+                    async for message in websocket:
+                        if not self._running:
+                            break
+                        try:
+                            _LOGGER.info("Shared WebSocket message received: %s", message)
+                            message_data = json.loads(message)
+                            self._dispatch(message_data)
+                        except json.JSONDecodeError:
+                            _LOGGER.warning("Received invalid JSON message from shared WebSocket")
+                        except Exception as e:
+                            _LOGGER.exception("Error processing shared WebSocket message: %s", e)
+
+            except asyncio.CancelledError:
+                _LOGGER.info("Shared WebSocket listener task cancelled")
+                break
+            except Exception as e:
+                _LOGGER.error(
+                    "Shared WebSocket connection error: %s. Retrying in %d seconds...",
+                    e,
+                    retry_delay,
+                )
+                self._websocket = None
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+
+        self._websocket = None
+
+    def _dispatch(self, message_data: dict) -> None:
+        """Dispatch a message to all registered coordinators."""
+        for coordinator in self.coordinators:
+            coordinator._process_incoming_message(message_data)
 
 
 class TempestStrikeCoordinator:
@@ -231,6 +423,7 @@ class TempestStrikeCoordinator:
         """Initialize the coordinator."""
         self.hass = hass
         self.entry = entry
+        self.instance_name = str(entry.data.get(CONF_NAME, entry.entry_id[:8])).strip()
         self.strike_buffer = {}
         self.station_coords = {}
         self.device_to_station = {}
@@ -282,18 +475,11 @@ class TempestStrikeCoordinator:
 
     def start_websocket_listener(self) -> None:
         """Start the WebSocket listener task."""
-        # Detect local weather stations from official and other WeatherFlow integrations
-        local_stations = self._detect_local_stations()
-        _LOGGER.info("Detected local weather stations: %s", local_stations)
-        for station in local_stations:
-            if station not in self.all_stations:
-                self.all_stations.append(station)
-                _LOGGER.info("Added local weather station %s to calculations", station)
-
+        # We launch the setup as a background task, which will then register with the shared session
         self._running = True
         self._listener_task = self.hass.async_create_background_task(
-            self._async_listen_loop(),
-            name=f"weatherflow_trilateration_ws_listener_{self.entry.entry_id}",
+            self._async_setup_and_register(),
+            name=f"weatherflow_trilateration_setup_{self.instance_name}_{self.entry.entry_id}",
         )
 
     def _detect_local_stations(self) -> list[str]:
@@ -962,7 +1148,7 @@ class TempestStrikeCoordinator:
         return {"water": water_features[:200], "forest": forest_features[:200]}
 
     async def async_stop(self) -> None:
-        """Stop the WebSocket listener task."""
+        """Stop the coordinator and deregister from shared websocket session."""
         self._running = False
         if self._listener_task:
             self._listener_task.cancel()
@@ -972,8 +1158,21 @@ class TempestStrikeCoordinator:
                 pass
             self._listener_task = None
 
-    async def _async_listen_loop(self) -> None:
-        """Handle the infinite WebSocket connection loop."""
+        _shared_ws = self.hass.data[DOMAIN].get("_shared_ws", {})
+        shared_session = _shared_ws.get(self.api_token)
+        if shared_session:
+            await shared_session.deregister(self)
+
+    async def _async_setup_and_register(self) -> None:
+        """Setup metadata and register with shared websocket session."""
+        # Detect local weather stations from official and other WeatherFlow integrations
+        local_stations = self._detect_local_stations()
+        _LOGGER.info("Detected local weather stations: %s", local_stations)
+        for station in local_stations:
+            if station not in self.all_stations:
+                self.all_stations.append(station)
+                _LOGGER.info("Added local weather station %s to calculations", station)
+
         # Discover nearby public stations first
         try:
             nearby_stations = await self._async_detect_nearby_public_stations()
@@ -990,61 +1189,13 @@ class TempestStrikeCoordinator:
         except Exception as e:
             _LOGGER.exception("Failed to resolve station metadata: %s", e)
 
-        # Create SSL context in executor to avoid blocking call in event loop
-        try:
-            ssl_context = await self.hass.async_add_executor_job(ssl.create_default_context)
-        except Exception as e:
-            _LOGGER.error("Failed to create SSL context: %s", e)
-            ssl_context = None
+        _shared_ws = self.hass.data[DOMAIN].setdefault("_shared_ws", {})
+        shared_session = _shared_ws.get(self.api_token)
+        if not shared_session:
+            shared_session = SharedWebSocketSession(self.hass, self.api_token)
+            _shared_ws[self.api_token] = shared_session
 
-        retry_delay = 5
-        while self._running:
-            try:
-                ws_url = WS_ENDPOINT
-                if self.api_token:
-                    ws_url = f"{WS_ENDPOINT}?token={self.api_token}"
-
-                _LOGGER.info(
-                    "Connecting to Tempest WebSocket: %s",
-                    ws_url.replace(self.api_token, "***") if self.api_token else ws_url,
-                )
-                async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
-                    retry_delay = 5
-                    for device_id in self.device_ids:
-                        # Skip subscription if it's a coordinate string or not numeric
-                        if not device_id.strip().isdigit():
-                            continue
-
-                        sub_msg = {
-                            "type": "listen_start",
-                            "device_id": int(device_id),
-                            "id": f"sub_{device_id}",
-                        }
-                        await websocket.send(json.dumps(sub_msg))
-                        _LOGGER.info("Subscribed to device: %s", device_id)
-
-                    _LOGGER.info("Tempest WebSocket connection established successfully")
-                    async for message in websocket:
-                        try:
-                            _LOGGER.info("WebSocket message received: %s", message)
-                            message_data = json.loads(message)
-                            self._process_incoming_message(message_data)
-                        except json.JSONDecodeError:
-                            _LOGGER.warning("Received invalid JSON message from WebSocket")
-                        except Exception as e:
-                            _LOGGER.exception("Error processing WebSocket message: %s", e)
-
-            except asyncio.CancelledError:
-                _LOGGER.info("WebSocket listener task cancelled")
-                break
-            except Exception as e:
-                _LOGGER.error(
-                    "WebSocket connection error: %s. Retrying in %d seconds...",
-                    e,
-                    retry_delay,
-                )
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 60)
+        shared_session.register(self)
 
     def _get_station_coords(self, device_id: str):
         """Retrieve coordinates for a specific station ID."""
@@ -1186,9 +1337,7 @@ class TempestStrikeCoordinator:
             del self.strike_buffer[matched_timestamp]
 
             if len(strike_events) >= 3:
-                _LOGGER.info(
-                    "Invoking trilateration with coordinates/distances: %s", strike_events
-                )
+                _LOGGER.info("Invoking trilateration with coordinates/distances: %s", strike_events)
                 self._calculate_trilateration(strike_events)
 
         # Cleanup old entries to prevent memory leak
@@ -1254,7 +1403,7 @@ class TempestStrikeCoordinator:
         )
 
         self.hass.bus.async_fire(
-            EVENT_STRIKE_CALCULATED,
+            event_key(self.entry.entry_id),
             {
                 "latitude": calculated_latitude,
                 "longitude": calculated_longitude,
@@ -1336,13 +1485,30 @@ class WeatherFlowVectorDataView(HomeAssistantView):
     name = "api:weatherflow_lightning:vector_data"
     requires_auth = True
 
-    def __init__(self, coordinator: TempestStrikeCoordinator) -> None:
+    def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the view."""
-        self.coordinator = coordinator
+        self.hass = hass
 
     async def get(self, request):
         """Handle GET request for vector data."""
-        cache_path = self.coordinator.hass.config.path(
+        entry_id = request.query.get("entry_id")
+
+        coordinator = None
+        if entry_id:
+            coordinator = self.hass.data[DOMAIN].get(entry_id)
+
+        if not coordinator:
+            for key, val in self.hass.data[DOMAIN].items():
+                if key not in ("_infra_registered", "_shared_ws") and isinstance(
+                    val, TempestStrikeCoordinator
+                ):
+                    coordinator = val
+                    break
+
+        if not coordinator:
+            return self.json({"water": [], "forest": []})
+
+        cache_path = self.hass.config.path(
             "custom_components/weatherflow_lightning_trilateration/vector_cache_v2.json"
         )
         if os.path.exists(cache_path):

@@ -5,6 +5,7 @@
         "title": "WeatherFlow Lightning Trilateration",
         "description": "Configure Tempest stations for lightning trilateration.\n\nAPI Token: Log in to tempestwx.com, go to Settings > Data Authorizations, and generate a token.\nPrimary Station: Enter your station ID or coordinates as lat,lon (e.g., {local_station_id} detected from your Home Assistant integration).\nNeighboring Stations: Enter a comma-separated list of nearby station IDs (at least 2 are required to calculate strikes).\n\nTo find neighboring station IDs, locate nearby stations on the Tempest Map at https://tempestwx.com/map and extract the ID from the station URL (e.g., in https://tempestwx.com/station/81149/ the ID is 81149).",
         "data": {
+          "name": "Name",
           "primary_station": "Primary Station (ID or coordinates as lat,lon)",
           "neighbor_stations": "Neighboring Stations (comma-separated IDs)",
           "api_token": "API Token (Personal Access Token)"

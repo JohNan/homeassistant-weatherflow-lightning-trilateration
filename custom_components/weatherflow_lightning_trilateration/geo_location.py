@@ -9,12 +9,13 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
-from .const import EVENT_STRIKE_CALCULATED
+from . import event_key
+from .const import CONF_NAME
 
 _LOGGER = logging.getLogger(__name__)
 
 _ADD_ENTITIES_CALLBACKS = []
-STORAGE_KEY = "weatherflow_lightning_trilateration.strikes"
+STORAGE_KEY_PREFIX = "weatherflow_lightning_trilateration.strikes"
 STORAGE_VERSION = 1
 
 
@@ -22,8 +23,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     """Set up the geo_location platform for WeatherFlow Lightning Trilateration."""
     _ADD_ENTITIES_CALLBACKS.append(async_add_entities)
 
+    instance_name = str(entry.data.get(CONF_NAME, entry.entry_id[:8])).strip()
+
     # Initialize strike storage
-    storage = WeatherFlowStrikeStorage(hass)
+    storage = WeatherFlowStrikeStorage(hass, entry.entry_id)
     await storage.async_load()
     hass.data.setdefault("weatherflow_lightning_trilateration_storage", {})[
         entry.entry_id
@@ -44,6 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 strike["time"],
                 21600 - age,
                 storage,
+                instance_name,
             )
             restored_strikes.append(entity)
 
@@ -62,12 +66,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             timestamp = time.time()
             storage.add_strike(latitude, longitude, timestamp)
             entity = WeatherFlowLightningStrikeEntity(
-                latitude, longitude, timestamp, 21600, storage
+                latitude, longitude, timestamp, 21600, storage, instance_name
             )
             for add_callback in _ADD_ENTITIES_CALLBACKS:
                 add_callback([entity])
 
-    remove_listener = hass.bus.async_listen(EVENT_STRIKE_CALCULATED, _handle_strike_event)
+    remove_listener = hass.bus.async_listen(event_key(entry.entry_id), _handle_strike_event)
     entry.async_on_unload(remove_listener)
 
     entry.async_on_unload(lambda: _ADD_ENTITIES_CALLBACKS.remove(async_add_entities))
@@ -76,10 +80,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 class WeatherFlowStrikeStorage:
     """Manages persistence of active lightning strikes."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         """Initialize the storage helper."""
         self.hass = hass
-        self.store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self.store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}_{entry_id}")
         self.strikes = []
 
     async def async_load(self) -> None:
@@ -111,7 +115,6 @@ class WeatherFlowStrikeStorage:
 class WeatherFlowLightningStrikeEntity(GeolocationEvent):
     """Representation of a lightning strike geolocation event."""
 
-    _attr_name = "Lightning Strike"
     _attr_source = "weatherflow_lightning_trilateration"
     _attr_icon = "mdi:flash"
 
@@ -122,8 +125,10 @@ class WeatherFlowLightningStrikeEntity(GeolocationEvent):
         timestamp: float,
         remaining_time: float,
         storage: WeatherFlowStrikeStorage,
+        instance_name: str,
     ) -> None:
         """Initialize the entity."""
+        self._attr_name = f"{instance_name} Lightning Strike"
         self._attr_latitude = latitude
         self._attr_longitude = longitude
         self.timestamp = timestamp

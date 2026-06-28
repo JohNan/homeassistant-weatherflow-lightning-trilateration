@@ -4,7 +4,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_API_TOKEN, CONF_NEIGHBOR_STATIONS, CONF_PRIMARY_STATION, DOMAIN
+from .const import CONF_API_TOKEN, CONF_NAME, CONF_NEIGHBOR_STATIONS, CONF_PRIMARY_STATION, DOMAIN
 
 
 class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -39,7 +39,7 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not errors:
                 return self.async_create_entry(
-                    title=f"WeatherFlow Trilateration ({primary})",
+                    title=user_input[CONF_NAME],
                     data=user_input,
                 )
 
@@ -58,6 +58,7 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         data_schema = vol.Schema(
             {
+                vol.Required(CONF_NAME, default="My Location"): str,
                 vol.Required(CONF_PRIMARY_STATION, default=default_primary): str,
                 vol.Optional(CONF_NEIGHBOR_STATIONS, default=""): str,
                 vol.Optional(CONF_API_TOKEN, default=default_token): str,
