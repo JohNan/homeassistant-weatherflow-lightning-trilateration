@@ -11,6 +11,7 @@ import time
 
 import voluptuous as vol
 import websockets
+from websockets.connection import State as WsState
 from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -279,7 +280,7 @@ class SharedWebSocketSession:
         if coordinator not in self.coordinators:
             self.coordinators.append(coordinator)
 
-        if self._websocket and not self._websocket.closed:
+        if self._websocket and self._websocket.state == WsState.OPEN:
             self.hass.async_create_task(self._send_listen_start_for_coordinator(coordinator))
 
         if not self._running:
@@ -293,7 +294,7 @@ class SharedWebSocketSession:
         """Deregister a coordinator from the shared session."""
         if coordinator in self.coordinators:
             self.coordinators.remove(coordinator)
-            if self._websocket and not self._websocket.closed:
+            if self._websocket and self._websocket.state == WsState.OPEN:
                 await self._send_listen_stop_for_coordinator(coordinator)
 
         if not self.coordinators:
@@ -318,7 +319,7 @@ class SharedWebSocketSession:
         self, coordinator: "TempestStrikeCoordinator"
     ) -> None:
         """Send listen_start commands for all devices of a coordinator."""
-        if not self._websocket or self._websocket.closed:
+        if not self._websocket or self._websocket.state != WsState.OPEN:
             return
 
         for device_id in coordinator.device_ids:
@@ -339,7 +340,7 @@ class SharedWebSocketSession:
         self, coordinator: "TempestStrikeCoordinator"
     ) -> None:
         """Send listen_stop commands for all devices of a coordinator."""
-        if not self._websocket or self._websocket.closed:
+        if not self._websocket or self._websocket.state != WsState.OPEN:
             return
 
         for device_id in coordinator.device_ids:
