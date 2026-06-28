@@ -1008,12 +1008,12 @@ class TempestStrikeCoordinator:
                             "id": f"sub_{device_id}",
                         }
                         await websocket.send(json.dumps(sub_msg))
-                        _LOGGER.debug("Subscribed to device: %s", device_id)
+                        _LOGGER.info("Subscribed to device: %s", device_id)
 
                     _LOGGER.info("Tempest WebSocket connection established successfully")
                     async for message in websocket:
                         try:
-                            _LOGGER.debug("WebSocket message received: %s", message)
+                            _LOGGER.info("WebSocket message received: %s", message)
                             message_data = json.loads(message)
                             self._process_incoming_message(message_data)
                         except json.JSONDecodeError:
@@ -1122,7 +1122,7 @@ class TempestStrikeCoordinator:
 
         timestamp = int(evt[0])
         distance = float(evt[1])
-        _LOGGER.debug(
+        _LOGGER.info(
             "Parsed strike event: device_id=%s, timestamp=%d, distance=%f",
             device_id,
             timestamp,
@@ -1131,7 +1131,7 @@ class TempestStrikeCoordinator:
 
         # Map device_id to station_id
         station_id = self.device_to_station.get(device_id, device_id)
-        _LOGGER.debug("Mapped device_id %s to station_id %s", device_id, station_id)
+        _LOGGER.info("Mapped device_id %s to station_id %s", device_id, station_id)
 
         # Find or create a group bucket matching timestamp within a 1-second variance tolerance
         matched_timestamp = None
@@ -1143,11 +1143,11 @@ class TempestStrikeCoordinator:
         if matched_timestamp is None:
             matched_timestamp = timestamp
             self.strike_buffer[matched_timestamp] = {}
-            _LOGGER.debug("Created new strike buffer bucket for timestamp %d", matched_timestamp)
+            _LOGGER.info("Created new strike buffer bucket for timestamp %d", matched_timestamp)
 
         self.strike_buffer[matched_timestamp][station_id] = distance
         bucket = self.strike_buffer[matched_timestamp]
-        _LOGGER.debug("Current strike buffer status for bucket %d: %s", matched_timestamp, bucket)
+        _LOGGER.info("Current strike buffer status for bucket %d: %s", matched_timestamp, bucket)
 
         # Check if the bucket has at least 3 unique station reports
         if len(bucket) >= 3:
@@ -1157,7 +1157,7 @@ class TempestStrikeCoordinator:
                 if coords:
                     strike_events.append((coords[0], coords[1], dist))
 
-            _LOGGER.debug(
+            _LOGGER.info(
                 "Clearing bucket %d from buffer and invoking trilateration calculations",
                 matched_timestamp,
             )
@@ -1165,7 +1165,7 @@ class TempestStrikeCoordinator:
             del self.strike_buffer[matched_timestamp]
 
             if len(strike_events) >= 3:
-                _LOGGER.debug(
+                _LOGGER.info(
                     "Invoking trilateration with coordinates/distances: %s", strike_events
                 )
                 self._calculate_trilateration(strike_events)
