@@ -1012,9 +1012,13 @@ class TempestStrikeCoordinator:
                     if response.status == 200:
                         raw_data = await response.json()
                         processed = self._process_vector_data(raw_data)
-                        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                        with open(cache_path, "w", encoding="utf-8") as f:
-                            json.dump(processed, f, ensure_ascii=False, indent=2)
+
+                        def _write_cache() -> None:
+                            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                            with open(cache_path, "w", encoding="utf-8") as f:
+                                json.dump(processed, f, ensure_ascii=False, indent=2)
+
+                        await self.hass.async_add_executor_job(_write_cache)
                         _LOGGER.info("Successfully fetched and cached vector data from %s", url)
                         success = True
                         break
@@ -1514,8 +1518,11 @@ class WeatherFlowVectorDataView(HomeAssistantView):
         )
         if os.path.exists(cache_path):
             try:
-                with open(cache_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                def _read_cache() -> dict:
+                    with open(cache_path, "r", encoding="utf-8") as f:
+                        return json.load(f)
+
+                data = await request.app["hass"].async_add_executor_job(_read_cache)
                 return self.json(data)
             except Exception as e:
                 _LOGGER.error("Failed to read vector cache: %s", e)
