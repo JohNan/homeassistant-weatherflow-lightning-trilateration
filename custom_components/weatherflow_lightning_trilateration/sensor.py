@@ -21,9 +21,16 @@ async def async_setup_entry(
         entry.entry_id,
     )
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    sensor = WeatherFlowTrilaterationSensor(coordinator, entry)
-    async_add_entities([sensor])
-    _LOGGER.debug("Dispatched WeatherFlowTrilaterationSensor registration")
+    
+    entities = [WeatherFlowTrilaterationSensor(coordinator, entry)]
+    
+    # Register a separate sensor for each configured station to monitor individual strike counts
+    for station_id in coordinator.all_stations:
+        if "," not in station_id and station_id.strip().isdigit():
+            entities.append(WeatherFlowStationStrikesSensor(coordinator, entry, station_id))
+            
+    async_add_entities(entities)
+    _LOGGER.debug("Dispatched WeatherFlowTrilateration sensors registration")
 
 
 class WeatherFlowTrilaterationSensor(SensorEntity):
@@ -103,3 +110,50 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
         """Update the sensor."""
         # The coordinator updates its internal lists, this method triggers a state refresh
         pass
+
+
+class WeatherFlowStationStrikesSensor(SensorEntity):
+    """Representation of a WeatherFlow Station Lightning Strike Sensor."""
+
+    def __init__(self, coordinator, entry: ConfigEntry, station_id: str) -> None:
+        """Initialize the sensor."""
+        self._coordinator = coordinator
+        self._entry = entry
+        self._station_id = station_id
+
+        # Retrieve mapped name if available
+        name = coordinator.station_names.get(station_id, f"Station {station_id}")
+        self._attr_name = f"WeatherFlow {name} Lightning Strikes"
+        self._attr_unique_id = f"{entry.entry_id}_station_{station_id}_strikes"
+        self._attr_icon = "mdi:lightning-bolt"
+        _LOGGER.debug(
+            "Initialized WeatherFlowStationStrikesSensor: name=%s, unique_id=%s",
+            self._attr_name,
+            self._attr_unique_id,
+        )
+
+    @property
+    def state(self) -> int:
+        """Return the state of the sensor (count of strikes detected by the station)."""
+        count = self._coordinator.station_strikes.get(self._station_id, 0)
+        return count
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return entity specific state attributes."""
+        last_strike = self._coordinator.station_last_strike.get(self._station_id, {})
+        attrs = {
+            "station_id": self._station_id,
+            "last_strike_timestamp": last_strike.get("timestamp"),
+            "last_strike_distance": last_strike.get("distance"),
+        }
+        return attrs
+
+    async def async_added_to_hass(self) -> None:
+        """Call when entity is added to hass."""
+        self._coordinator.async_add_listener(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Call when entity will be removed from HASS."""
+        self._coordinator.async_remove_listener(self.async_write_ha_state)
+

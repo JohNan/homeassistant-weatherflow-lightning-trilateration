@@ -236,6 +236,9 @@ class TempestStrikeCoordinator:
         self.device_to_station = {}
         self.device_ids = set()
         self.elevation_grid = []
+        self.station_strikes = {}
+        self.station_last_strike = {}
+        self.station_names = {}
         self._listeners = []
         self.wind_speed = 0.0
         self.wind_direction = 0.0
@@ -363,6 +366,10 @@ class TempestStrikeCoordinator:
                             self.station_coords[station_id] = (float(lat), float(lon))
                             detected.append(station_id)
 
+                            name = station.get("public_name") or station.get("name", "")
+                            if name:
+                                self.station_names[station_id] = name
+
                             # Extract and map devices for public stations
                             devices = station.get("devices", [])
                             for device in devices:
@@ -488,6 +495,9 @@ class TempestStrikeCoordinator:
                             station_id = str(station.get("station_id", ""))
                             lat = station.get("latitude")
                             lon = station.get("longitude")
+                            name = station.get("public_name") or station.get("name", "")
+                            if name:
+                                self.station_names[station_id] = name
                             if lat is not None and lon is not None:
                                 self.station_coords[station_id] = (
                                     float(lat),
@@ -595,6 +605,9 @@ class TempestStrikeCoordinator:
                         for station in stations:
                             lat = station.get("latitude")
                             lon = station.get("longitude")
+                            name = station.get("public_name") or station.get("name", "")
+                            if name:
+                                self.station_names[station_id] = name
                             if lat is not None and lon is not None:
                                 self.station_coords[station_id] = (
                                     float(lat),
@@ -1132,6 +1145,14 @@ class TempestStrikeCoordinator:
         # Map device_id to station_id
         station_id = self.device_to_station.get(device_id, device_id)
         _LOGGER.info("Mapped device_id %s to station_id %s", device_id, station_id)
+
+        # Track strike counts and last strike parameters per station
+        self.station_strikes[station_id] = self.station_strikes.get(station_id, 0) + 1
+        self.station_last_strike[station_id] = {
+            "timestamp": timestamp,
+            "distance": distance,
+        }
+        self.async_update_listeners()
 
         # Find or create a group bucket matching timestamp within a 1-second variance tolerance
         matched_timestamp = None

@@ -144,3 +144,37 @@ def test_process_vector_data_relation_merge(mock_hass, mock_entry):
 
     assert len(coords) >= 4
     assert coords[0] == coords[-1]
+
+
+def test_station_strikes_tracking(mock_hass, mock_entry):
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+
+    # Set up device-to-station mapping
+    coordinator.device_to_station = {"309874": "125048"}
+
+    # Mock listener callback
+    listener_called = False
+
+    def mock_listener():
+        nonlocal listener_called
+        listener_called = True
+
+    coordinator.async_add_listener(mock_listener)
+
+    # Simulate strike event message
+    message = {
+        "type": "evt_strike",
+        "device_id": 309874,
+        "evt": [1782640276, 17.0, 3848]
+    }
+
+    coordinator._process_incoming_message(message)
+
+    # Assert strike stats were updated
+    assert coordinator.station_strikes.get("125048") == 1
+    assert coordinator.station_last_strike.get("125048") == {
+        "timestamp": 1782640276,
+        "distance": 17.0,
+    }
+    assert listener_called is True
+
