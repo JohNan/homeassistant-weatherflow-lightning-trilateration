@@ -17,7 +17,13 @@ This workspace represents a Home Assistant custom integration codebase. All agen
   3. Local integration-relative imports.
 - Format python script contents strictly using standard formatting specs (pep8/black style). Double-quote all strings unless escaping is avoided.
 
-## Frontend Visualizer Card Development Rules
-- **Syntax Validation:** Always run node-based checks via task-runner (`mise run validate-js` or `node --check`) before committing javascript changes.
+## Frontend Build Artifact — NEVER Edit the JS Directly
+- **Source of truth:** All Lovelace card logic lives in [`src/weatherflow-lightning-card.ts`](file:///workspace/tempest_trilateration/src/weatherflow-lightning-card.ts).
+- **`dist/weatherflow-lightning-card.js` is a generated build artifact** produced by `npm run build` (esbuild). It carries a `/* AUTO-GENERATED */` banner at the top. **Never edit this file directly.** Any manual edits will be overwritten on the next build.
+- **Workflow for all card changes:**
+  1. Edit `src/weatherflow-lightning-card.ts`.
+  2. Run `npm run build` from the repo root to regenerate the JS.
+  3. Commit both the `.ts` source and the rebuilt `.js` together in the same commit.
+- **Syntax Validation:** After building, verify with `node --check custom_components/weatherflow_lightning_trilateration/dist/weatherflow-lightning-card.js` before committing.
 - **Geographic Terrain Alignment:** Ensure all visual elements (weather stations, concentric range rings, crosshair lines, strike targets, and heatmap indicators) sample the terrain altitude via `getTerrainHeight(x, z)` to prevent clipping or floating above the displaced 3D mesh.
 - **WebGL Memory Management:** Dispose of materials and geometries properly (`material.dispose()`, `geometry.dispose()`) when transient or dynamic meshes/sprites (such as volumetric glows or heatmap points) are evicted from the scene to prevent memory leaks.

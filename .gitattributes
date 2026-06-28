@@ -1,0 +1,4 @@
+# Mark the built Lovelace card JS as a generated file.
+# GitHub will collapse diffs for it and linguist won't count it as source.
+# Source of truth: src/weatherflow-lightning-card.ts
+custom_components/weatherflow_lightning_trilateration/dist/weatherflow-lightning-card.js linguist-generated=true

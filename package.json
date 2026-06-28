@@ -8,7 +8,7 @@
     "format:check": "prettier --check src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
     "typecheck": "tsc --noEmit",
-    "build": "esbuild src/weatherflow-lightning-card.ts --minify --outfile=custom_components/weatherflow_lightning_trilateration/dist/weatherflow-lightning-card.js"
+    "build": "esbuild src/weatherflow-lightning-card.ts --minify --banner:js='/* AUTO-GENERATED — do not edit. Source: src/weatherflow-lightning-card.ts. Run: npm run build */' --outfile=custom_components/weatherflow_lightning_trilateration/dist/weatherflow-lightning-card.js"
   },
   "devDependencies": {
     "@eslint/js": "^9.5.0",
