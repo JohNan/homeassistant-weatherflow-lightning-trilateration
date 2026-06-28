@@ -21,14 +21,14 @@ async def async_setup_entry(
         entry.entry_id,
     )
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    
+
     entities = [WeatherFlowTrilaterationSensor(coordinator, entry)]
-    
+
     # Register a separate sensor for each configured station to monitor individual strike counts
     for station_id in coordinator.all_stations:
         if "," not in station_id and station_id.strip().isdigit():
             entities.append(WeatherFlowStationStrikesSensor(coordinator, entry, station_id))
-            
+
     async_add_entities(entities)
     _LOGGER.debug("Dispatched WeatherFlowTrilateration sensors registration")
 
@@ -40,7 +40,7 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
         """Initialize the sensor."""
         self._coordinator = coordinator
         self._entry = entry
-        self._attr_name = "WeatherFlow Lightning Trilateration Stations"
+        self._attr_name = f"{coordinator.instance_name} Lightning Trilateration Stations"
         self._attr_unique_id = f"{entry.entry_id}_stations"
         self._attr_icon = "mdi:lightning-bolt"
         _LOGGER.debug(
@@ -123,7 +123,7 @@ class WeatherFlowStationStrikesSensor(SensorEntity):
 
         # Retrieve mapped name if available
         name = coordinator.station_names.get(station_id, f"Station {station_id}")
-        self._attr_name = f"WeatherFlow {name} Lightning Strikes"
+        self._attr_name = f"{coordinator.instance_name} {name} Lightning Strikes"
         self._attr_unique_id = f"{entry.entry_id}_station_{station_id}_strikes"
         self._attr_icon = "mdi:lightning-bolt"
         _LOGGER.debug(
@@ -156,4 +156,3 @@ class WeatherFlowStationStrikesSensor(SensorEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Call when entity will be removed from HASS."""
         self._coordinator.async_remove_listener(self.async_write_ha_state)
-

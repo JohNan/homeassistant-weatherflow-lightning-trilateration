@@ -1,10 +1,18 @@
+import math
 import sys
 from unittest.mock import MagicMock
+
+import pytest
+
+from custom_components.weatherflow_lightning_trilateration import TempestStrikeCoordinator
+from custom_components.weatherflow_lightning_trilateration.const import EVENT_STRIKE_CALCULATED
+
 
 # Mock Home Assistant modules before they are imported
 class StaticPathConfig:
     def __init__(self, *args, **kwargs):
         pass
+
 
 mock_http = MagicMock()
 mock_http.StaticPathConfig = StaticPathConfig
@@ -17,21 +25,15 @@ mock_helpers.config_validation = MagicMock()
 mock_helpers.device_registry = MagicMock()
 mock_helpers.aiohttp_client = MagicMock()
 
-sys.modules['homeassistant'] = MagicMock()
-sys.modules['homeassistant.components'] = MagicMock()
-sys.modules['homeassistant.components.http'] = mock_http
-sys.modules['homeassistant.config_entries'] = MagicMock()
-sys.modules['homeassistant.core'] = mock_core
-sys.modules['homeassistant.helpers'] = mock_helpers
-sys.modules['homeassistant.helpers.config_validation'] = mock_helpers.config_validation
-sys.modules['homeassistant.helpers.device_registry'] = mock_helpers.device_registry
-sys.modules['homeassistant.helpers.aiohttp_client'] = mock_helpers.aiohttp_client
-
-import math
-import pytest
-
-from custom_components.weatherflow_lightning_trilateration import TempestStrikeCoordinator
-from custom_components.weatherflow_lightning_trilateration.const import EVENT_STRIKE_CALCULATED
+sys.modules["homeassistant"] = MagicMock()
+sys.modules["homeassistant.components"] = MagicMock()
+sys.modules["homeassistant.components.http"] = mock_http
+sys.modules["homeassistant.config_entries"] = MagicMock()
+sys.modules["homeassistant.core"] = mock_core
+sys.modules["homeassistant.helpers"] = mock_helpers
+sys.modules["homeassistant.helpers.config_validation"] = mock_helpers.config_validation
+sys.modules["homeassistant.helpers.device_registry"] = mock_helpers.device_registry
+sys.modules["homeassistant.helpers.aiohttp_client"] = mock_helpers.aiohttp_client
 
 
 @pytest.fixture
@@ -51,7 +53,7 @@ def mock_entry():
     entry.data = {
         "primary_station": "172103",
         "neighbor_stations": "215396,81149",
-        "api_token": "mock_token"
+        "api_token": "mock_token",
     }
     return entry
 
@@ -79,7 +81,7 @@ def test_trilateration_calculation(mock_hass, mock_entry):
     # Verify event was fired with the correct coordinates
     mock_hass.bus.async_fire.assert_called_once()
     call_args = mock_hass.bus.async_fire.call_args[0]
-    assert call_args[0] == EVENT_STRIKE_CALCULATED
+    assert call_args[0] == f"{EVENT_STRIKE_CALCULATED}_{mock_entry.entry_id}"
 
     payload = mock_hass.bus.async_fire.call_args[0][1]
     assert pytest.approx(payload["latitude"], abs=1e-3) == target_lat
@@ -96,10 +98,7 @@ def test_process_vector_data_relation_merge(mock_hass, mock_entry):
             {
                 "type": "relation",
                 "id": 999999,
-                "tags": {
-                    "natural": "water",
-                    "type": "multipolygon"
-                },
+                "tags": {"natural": "water", "type": "multipolygon"},
                 "members": [
                     {
                         "type": "way",
@@ -108,28 +107,22 @@ def test_process_vector_data_relation_merge(mock_hass, mock_entry):
                         "geometry": [
                             {"lat": 10.0, "lon": 10.0},
                             {"lat": 10.0, "lon": 15.0},
-                            {"lat": 10.0, "lon": 20.0}
-                        ]
+                            {"lat": 10.0, "lon": 20.0},
+                        ],
                     },
                     {
                         "type": "way",
                         "ref": 2,
                         "role": "outer",
-                        "geometry": [
-                            {"lat": 20.0, "lon": 15.0},
-                            {"lat": 10.0, "lon": 20.0}
-                        ]
+                        "geometry": [{"lat": 20.0, "lon": 15.0}, {"lat": 10.0, "lon": 20.0}],
                     },
                     {
                         "type": "way",
                         "ref": 3,
                         "role": "outer",
-                        "geometry": [
-                            {"lat": 20.0, "lon": 15.0},
-                            {"lat": 10.0, "lon": 10.0}
-                        ]
-                    }
-                ]
+                        "geometry": [{"lat": 20.0, "lon": 15.0}, {"lat": 10.0, "lon": 10.0}],
+                    },
+                ],
             }
         ]
     }
@@ -162,11 +155,7 @@ def test_station_strikes_tracking(mock_hass, mock_entry):
     coordinator.async_add_listener(mock_listener)
 
     # Simulate strike event message
-    message = {
-        "type": "evt_strike",
-        "device_id": 309874,
-        "evt": [1782640276, 17.0, 3848]
-    }
+    message = {"type": "evt_strike", "device_id": 309874, "evt": [1782640276, 17.0, 3848]}
 
     coordinator._process_incoming_message(message)
 
@@ -177,4 +166,3 @@ def test_station_strikes_tracking(mock_hass, mock_entry):
         "distance": 17.0,
     }
     assert listener_called is True
-

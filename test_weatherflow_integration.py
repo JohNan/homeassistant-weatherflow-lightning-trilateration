@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import sys
+
 import websockets
 
 # Setup logging
@@ -57,12 +58,9 @@ def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     lon2_rad = math.radians(lon2)
 
     dlon = lon2_rad - lon1_rad
-    dlat = lat2_rad - dlat_rad if 'dlat_rad' in locals() else (lat2_rad - lat1_rad)
+    dlat = lat2_rad - lat1_rad
 
-    a = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
-    )
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return r * c
 
@@ -101,7 +99,9 @@ def trilaterate(stations_data: list[tuple[float, float, float]]) -> tuple[float,
             for y_offset in range(-100, 101):
                 tx = best_x + x_offset * step
                 ty = best_y + y_offset * step
-                error = sum((math.sqrt((tx - px) ** 2 + (ty - py) ** 2) - d) ** 2 for px, py, d in points)
+                error = sum(
+                    (math.sqrt((tx - px) ** 2 + (ty - py) ** 2) - d) ** 2 for px, py, d in points
+                )
                 if error < min_error:
                     min_error = error
                     best_x = tx
@@ -130,7 +130,9 @@ async def run_monitor(token: str):
                     "id": f"sub_{dev_id}",
                 }
                 await websocket.send(json.dumps(sub_msg))
-                _LOGGER.info("Subscribed to %s (Device: %s, Station: %s)", info["name"], dev_id, station_id)
+                _LOGGER.info(
+                    "Subscribed to %s (Device: %s, Station: %s)", info["name"], dev_id, station_id
+                )
 
             _LOGGER.info("Monitoring stream. Press Ctrl+C to terminate.")
             async for message in websocket:
@@ -152,8 +154,8 @@ async def run_monitor(token: str):
                         "📊 Observation Update - Device: %s, Temperature: %s°C, Wind: %s m/s, Dewpoint: %s°C, "
                         "Lightning: [1h count: %s, last dist: %s km, last epoch: %s]",
                         data.get("device_id"),
-                        data.get("obs", [[None]*8])[0][7],
-                        data.get("obs", [[None]*3])[0][2],
+                        data.get("obs", [[None] * 8])[0][7],
+                        data.get("obs", [[None] * 3])[0][2],
                         summary.get("dew_point"),
                         summary.get("strike_count_1h"),
                         summary.get("strike_last_dist"),
@@ -177,7 +179,9 @@ def run_simulation():
     # Simulated target strike location
     target_lat = 55.75000
     target_lon = 13.80000
-    _LOGGER.info("Simulated Strike Location Target: Latitude %f, Longitude %f", target_lat, target_lon)
+    _LOGGER.info(
+        "Simulated Strike Location Target: Latitude %f, Longitude %f", target_lat, target_lon
+    )
 
     # Calculate distances from each station
     strike_events = []

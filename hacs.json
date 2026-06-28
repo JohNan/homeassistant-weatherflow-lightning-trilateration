@@ -1,9 +1,5 @@
 {
   "name": "WeatherFlow Lightning Trilateration",
-  "domains": [
-    "weatherflow_lightning_trilateration"
-  ],
-  "iot_class": "cloud_push",
-  "homeassistant": "2024.1.0",
-  "render_readme": true
+  "render_readme": true,
+  "homeassistant": "2024.10.0"
 }
