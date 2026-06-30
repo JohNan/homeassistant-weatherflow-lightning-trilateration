@@ -99,6 +99,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (this.config.show_weather === false) {
       if (this.rainParticles) this.rainParticles.visible = false;
       if (this.windParticles) this.windParticles.visible = false;
+      if (this.weatherOverlay) this.weatherOverlay.style.display = 'none';
+    } else {
+      if (this.weatherOverlay) this.weatherOverlay.style.display = 'flex';
     }
 
     if (oldConfig.show_map !== this.config.show_map) {
@@ -369,6 +372,67 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.tooltip.style.fontFamily = 'sans-serif';
     this.tooltip.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.5)';
     this.container.appendChild(this.tooltip);
+
+    // Weather Telemetry HUD creation
+    const hudStyle = document.createElement('style');
+    hudStyle.textContent = `
+      .weather-telemetry-hud {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        background-color: rgba(15, 23, 42, 0.75);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        border: 1px solid rgba(56, 189, 248, 0.25);
+        border-radius: 8px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 5;
+        color: #e2e8f0;
+        font-family: var(--paper-font-body1_-_font-family, sans-serif);
+        pointer-events: none;
+      }
+      .hud-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .hud-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        color: #38bdf8;
+      }
+      .hud-data {
+        display: flex;
+        flex-direction: column;
+      }
+      .hud-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        color: #94a3b8;
+        letter-spacing: 0.5px;
+      }
+      .hud-value {
+        font-size: 14px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .wind-arrow {
+        display: inline-block;
+        transition: transform 0.3s ease;
+      }
+    `;
+    this.container.appendChild(hudStyle);
+
+    this.weatherOverlay = document.createElement('div');
+    this.weatherOverlay.className = 'weather-telemetry-hud';
+    this.weatherOverlay.style.display = this.config.show_weather !== false ? 'flex' : 'none';
+    this.container.appendChild(this.weatherOverlay);
 
     // Interactive helper variables
     this.raycaster = new THREE.Raycaster();
@@ -1283,6 +1347,47 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.windParticles.visible = false;
   }
 
+  updateWeatherOverlay() {
+    if (!this.weatherOverlay) return;
+
+    const windSpeedStr = (this.windSpeed || 0).toFixed(1);
+    const rainRateStr = (this.rainRate || 0).toFixed(1);
+    const windDir = this.windDirection || 0;
+
+    this.weatherOverlay.innerHTML = `
+      <div class="hud-row">
+        <div class="hud-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/>
+          </svg>
+        </div>
+        <div class="hud-data">
+          <div class="hud-label">Wind</div>
+          <div class="hud-value">
+            ${windSpeedStr} m/s
+            <span class="wind-arrow" style="transform: rotate(${windDir}deg); margin-left: 4px;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="19" x2="12" y2="5"></line>
+                <polyline points="5 12 12 5 19 12"></polyline>
+              </svg>
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="hud-row">
+        <div class="hud-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22a5 5 0 0 0 5-5c0-2-5-10-5-10S7 15 7 17a5 5 0 0 0 5 5z"/>
+          </svg>
+        </div>
+        <div class="hud-data">
+          <div class="hud-label">Precipitation</div>
+          <div class="hud-value">${rainRateStr} mm/h</div>
+        </div>
+      </div>
+    `;
+  }
+
   updateWeatherSystem(deltaTime) {
     if (!this.initialized) return;
 
@@ -2013,6 +2118,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.rainRate = attrs.rain_rate !== undefined ? parseFloat(attrs.rain_rate) : 0.0;
 
       this.updateDayNightEngine();
+      this.updateWeatherOverlay();
 
       const stationsAttr = attrs.stations;
 
@@ -2481,9 +2587,7 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
     picker.hass = this._hass;
     // Filter to only weatherflow trilateration station sensors
     picker.entityFilter = (entity: any) =>
-      entity.attributes &&
-      Array.isArray(entity.attributes.stations) &&
-      entity.attributes.icon === 'mdi:lightning-bolt';
+      entity.attributes && Array.isArray(entity.attributes.stations) && entity.attributes.icon === 'mdi:lightning-bolt';
     const current = this._config && this._config.entity_id ? this._config.entity_id : null;
     if (picker.value !== current) {
       picker.value = current;
@@ -2499,13 +2603,13 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
     const newConfig = {
       ...this._config,
       entity_id: entityId || undefined,
-      entry_id: entry_id || undefined,
+      entry_id: entry_id || undefined
     };
     this.dispatchEvent(
       new CustomEvent('config-changed', {
         detail: { config: newConfig },
         bubbles: true,
-        composed: true,
+        composed: true
       })
     );
   }
