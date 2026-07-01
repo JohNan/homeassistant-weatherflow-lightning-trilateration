@@ -31,11 +31,41 @@ class MockSensorEntity:
 mock_sensor = MagicMock()
 mock_sensor.SensorEntity = MockSensorEntity
 
-sys.modules["homeassistant"] = MagicMock()
-sys.modules["homeassistant.components"] = MagicMock()
+class MockConfigFlow:
+    @classmethod
+    def __init_subclass__(cls, **kwargs):
+        pass
+
+class MockOptionsFlow:
+    @classmethod
+    def __init_subclass__(cls, **kwargs):
+        pass
+
+    def async_create_entry(self, title, data):
+        return {"type": "create_entry", "title": title, "data": data}
+
+mock_config_entries = MagicMock()
+mock_config_entries.ConfigFlow = MockConfigFlow
+mock_config_entries.OptionsFlow = MockOptionsFlow
+
+mock_homeassistant = MagicMock()
+mock_homeassistant.components = MagicMock()
+mock_homeassistant.components.http = mock_http
+mock_homeassistant.components.sensor = mock_sensor
+mock_homeassistant.config_entries = mock_config_entries
+mock_homeassistant.core = mock_core
+mock_homeassistant.helpers = mock_helpers
+mock_homeassistant.helpers.config_validation = mock_helpers.config_validation
+mock_homeassistant.helpers.device_registry = mock_helpers.device_registry
+mock_homeassistant.helpers.aiohttp_client = mock_helpers.aiohttp_client
+mock_homeassistant.helpers.event = mock_helpers.event
+mock_homeassistant.helpers.entity_platform = mock_helpers.entity_platform
+
+sys.modules["homeassistant"] = mock_homeassistant
+sys.modules["homeassistant.components"] = mock_homeassistant.components
 sys.modules["homeassistant.components.http"] = mock_http
 sys.modules["homeassistant.components.sensor"] = mock_sensor
-sys.modules["homeassistant.config_entries"] = MagicMock()
+sys.modules["homeassistant.config_entries"] = mock_config_entries
 sys.modules["homeassistant.core"] = mock_core
 sys.modules["homeassistant.helpers"] = mock_helpers
 sys.modules["homeassistant.helpers.config_validation"] = mock_helpers.config_validation
@@ -298,6 +328,32 @@ def test_strike_rate_sensor_tracking(mock_hass, mock_entry):
     # Stale strike should be pruned, new one added
     assert sensor.native_value == 1
     assert coordinator.recent_strike_timestamps == [timestamp + 65]
+
+
+def test_options_flow_handler(mock_hass, mock_entry):
+    import asyncio
+    from custom_components.weatherflow_lightning_trilateration.config_flow import TempestTrilaterationOptionsFlowHandler
+
+    mock_entry.options = {
+        "neighbor_stations": "215396,81149",
+        "api_token": "mock_token",
+        "distance_filter": 100.0,
+    }
+
+    handler = TempestTrilaterationOptionsFlowHandler(mock_entry)
+    handler.hass = mock_hass
+
+    # Call step_init with user input
+    user_input = {
+        "neighbor_stations": "111111,222222",
+        "api_token": "new_token",
+        "distance_filter": 50.0,
+    }
+    result = asyncio.run(handler.async_step_init(user_input=user_input))
+
+    assert result["type"] == "create_entry"
+    assert result["data"] == user_input
+
 
 
 

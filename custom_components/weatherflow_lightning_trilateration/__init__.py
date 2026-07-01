@@ -22,6 +22,7 @@ from websockets.connection import State as WsState
 
 from .const import (
     CONF_API_TOKEN,
+    CONF_DISTANCE_FILTER,
     CONF_NAME,
     CONF_NEIGHBOR_STATIONS,
     CONF_PRIMARY_STATION,
@@ -243,7 +244,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _LOGGER.debug("Forwarding config entry setups to platforms: ['geo_location', 'sensor']")
     await hass.config_entries.async_forward_entry_setups(entry, ["geo_location", "sensor"])
+
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+
     return True
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload config entry when options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -435,6 +444,7 @@ class TempestStrikeCoordinator:
         self.station_strikes = {}
         self.station_last_strike = {}
         self.station_names = {}
+        self.recent_strike_timestamps = []
         self._listeners = []
         self.wind_speed = 0.0
         self.wind_direction = 0.0
@@ -442,9 +452,18 @@ class TempestStrikeCoordinator:
         self.rain_rate = 0.0
 
         self.primary_station = str(entry.data.get(CONF_PRIMARY_STATION, "")).strip()
-        neighbor_raw = str(entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
+        neighbor_raw = str(
+            entry.options.get(
+                CONF_NEIGHBOR_STATIONS, entry.data.get(CONF_NEIGHBOR_STATIONS, "")
+            )
+        )
         self.neighbor_stations = [s.strip() for s in neighbor_raw.split(",") if s.strip()]
-        self.api_token = str(entry.data.get(CONF_API_TOKEN, "")).strip()
+        self.api_token = str(
+            entry.options.get(CONF_API_TOKEN, entry.data.get(CONF_API_TOKEN, ""))
+        ).strip()
+        self.distance_filter = float(
+            entry.options.get(CONF_DISTANCE_FILTER, 100.0)
+        )
         self.all_stations = [self.primary_station] + self.neighbor_stations
 
         # Parse coordinate if primary station is coordinates
@@ -884,13 +903,14 @@ class TempestStrikeCoordinator:
                 if coords:
                     lat, lon = coords
                     dist = self._calculate_distance(ref_lat, ref_lon, lat, lon)
-                    if dist <= 100.0:
+                    if dist <= self.distance_filter:
                         filtered_stations.append(station_id)
                     else:
                         _LOGGER.warning(
-                            "Filtering out station %s because it is too far (%.1f km) from primary station",
+                            "Filtering out station %s because it is too far (%.1f km > %.1f km) from primary station",
                             station_id,
                             dist,
+                            self.distance_filter,
                         )
                 else:
                     # Keep stations with unresolved coordinates for now so we can still try to listen
@@ -1275,6 +1295,16 @@ class TempestStrikeCoordinator:
 
     def _process_incoming_message(self, message_data: dict) -> None:
         """Process an incoming WebSocket message."""
+        now_time = time.time()
+
+        # Clean up old timestamps (older than 60 seconds)
+        original_length = len(self.recent_strike_timestamps)
+        self.recent_strike_timestamps = [
+            ts for ts in self.recent_strike_timestamps if now_time - ts <= 60
+        ]
+        if len(self.recent_strike_timestamps) < original_length:
+            self.async_update_listeners()
+
         msg_type = message_data.get("type")
         _LOGGER.debug("Processing WebSocket message of type: %s", msg_type)
 
@@ -1335,6 +1365,7 @@ class TempestStrikeCoordinator:
         if matched_timestamp is None:
             matched_timestamp = timestamp
             self.strike_buffer[matched_timestamp] = {}
+            self.recent_strike_timestamps.append(timestamp)
             _LOGGER.info("Created new strike buffer bucket for timestamp %d", matched_timestamp)
 
             def _process_bucket(_: object) -> None:
