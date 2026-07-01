@@ -1,11 +1,9 @@
+# ruff: noqa: E402
 import math
 import sys
 from unittest.mock import MagicMock
 
 import pytest
-
-from custom_components.weatherflow_lightning_trilateration import TempestStrikeCoordinator
-from custom_components.weatherflow_lightning_trilateration.const import EVENT_STRIKE_CALCULATED
 
 
 # Mock Home Assistant modules before they are imported
@@ -34,6 +32,9 @@ sys.modules["homeassistant.helpers"] = mock_helpers
 sys.modules["homeassistant.helpers.config_validation"] = mock_helpers.config_validation
 sys.modules["homeassistant.helpers.device_registry"] = mock_helpers.device_registry
 sys.modules["homeassistant.helpers.aiohttp_client"] = mock_helpers.aiohttp_client
+
+from custom_components.weatherflow_lightning_trilateration import TempestStrikeCoordinator
+from custom_components.weatherflow_lightning_trilateration.const import EVENT_STRIKE_CALCULATED
 
 
 @pytest.fixture

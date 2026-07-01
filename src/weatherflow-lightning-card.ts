@@ -219,6 +219,13 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.rangeRingsGroup = null;
     }
 
+    // Dispose Strike Layer (fixes WebGL memory leak)
+    if (this.strikeLayer) {
+      this.scene.remove(this.strikeLayer);
+      this.disposeHierarchy(this.strikeLayer);
+      this.strikeLayer = null;
+    }
+
     // Dispose Static Elements
     if (this.terrainMesh) {
       this.scene.remove(this.terrainMesh);
