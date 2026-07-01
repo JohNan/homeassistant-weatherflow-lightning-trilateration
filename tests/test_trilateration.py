@@ -167,3 +167,63 @@ def test_station_strikes_tracking(mock_hass, mock_entry):
         "distance": 17.0,
     }
     assert listener_called is True
+
+
+def test_osm_vector_cache_invalidation(mock_hass, mock_entry):
+    import asyncio
+    import os
+    from unittest.mock import patch, mock_open, AsyncMock
+
+    # Configure mock path return values
+    paths_queried = []
+    def mock_path_builder(filename):
+        paths_queried.append(filename)
+        return f"/mock/path/{filename}"
+
+    async def mock_async_add_executor_job(func, *args):
+        return func(*args)
+
+    mock_hass.config.path = mock_path_builder
+    mock_hass.async_add_executor_job = mock_async_add_executor_job
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    
+    # Mock coordinates and primary station
+    coordinator.primary_station = "172103"
+    coordinator.station_coords = {"172103": (59.847, 17.61482)}
+
+    # Mock dynamic OS operations
+    exists_mock = MagicMock(return_value=False)
+    remove_mock = MagicMock()
+    listdir_mock = MagicMock(return_value=["vector_cache_172103_59_847_17_61482.json", "vector_cache_172103_different.json"])
+    
+    # Mock HTTP client responses
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={"elements": []})
+    
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_ctx.__aexit__ = AsyncMock(return_value=None)
+    
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(return_value=mock_ctx)
+
+    with patch("custom_components.weatherflow_lightning_trilateration.async_get_clientsession", return_value=mock_session), \
+         patch("os.path.exists", exists_mock), \
+         patch("os.makedirs") as makedirs_mock, \
+         patch("os.listdir", listdir_mock), \
+         patch("os.remove", remove_mock), \
+         patch("builtins.open", mock_open()) as open_mock:
+        
+        # Trigger cache fetch with first coords
+        asyncio.run(coordinator._async_fetch_vector_data())
+        
+        # Check cache filename constructed correctly
+        assert any("vector_cache_172103_59_847_17_61482.json" in p for p in paths_queried)
+        
+        # Verify old cache cleanup was called (vector_cache_172103_different.json should be removed)
+        # Verify vector_cache_172103_59_847_17_61482.json was NOT removed
+        remove_calls = [c[0][0] for c in remove_mock.call_args_list]
+        assert any("vector_cache_172103_different.json" in rc for rc in remove_calls)
+        assert not any("vector_cache_172103_59_847_17_61482.json" in rc for rc in remove_calls)
+
