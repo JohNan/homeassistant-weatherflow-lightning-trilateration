@@ -23,10 +23,18 @@ mock_helpers.config_validation = MagicMock()
 mock_helpers.device_registry = MagicMock()
 mock_helpers.aiohttp_client = MagicMock()
 mock_helpers.event = MagicMock()
+mock_helpers.entity_platform = MagicMock()
+
+class MockSensorEntity:
+    pass
+
+mock_sensor = MagicMock()
+mock_sensor.SensorEntity = MockSensorEntity
 
 sys.modules["homeassistant"] = MagicMock()
 sys.modules["homeassistant.components"] = MagicMock()
 sys.modules["homeassistant.components.http"] = mock_http
+sys.modules["homeassistant.components.sensor"] = mock_sensor
 sys.modules["homeassistant.config_entries"] = MagicMock()
 sys.modules["homeassistant.core"] = mock_core
 sys.modules["homeassistant.helpers"] = mock_helpers
@@ -34,6 +42,7 @@ sys.modules["homeassistant.helpers.config_validation"] = mock_helpers.config_val
 sys.modules["homeassistant.helpers.device_registry"] = mock_helpers.device_registry
 sys.modules["homeassistant.helpers.aiohttp_client"] = mock_helpers.aiohttp_client
 sys.modules["homeassistant.helpers.event"] = mock_helpers.event
+sys.modules["homeassistant.helpers.entity_platform"] = mock_helpers.entity_platform
 
 from custom_components.weatherflow_lightning_trilateration import TempestStrikeCoordinator
 from custom_components.weatherflow_lightning_trilateration.const import EVENT_STRIKE_CALCULATED
@@ -258,5 +267,37 @@ def test_mlat_calculation_n4(mock_hass, mock_entry):
     payload = mock_hass.bus.async_fire.call_args[0][1]
     assert pytest.approx(payload["latitude"], abs=1e-3) == target_lat
     assert pytest.approx(payload["longitude"], abs=1e-3) == target_lon
+
+
+def test_strike_rate_sensor_tracking(mock_hass, mock_entry):
+    import time
+    from unittest.mock import patch
+    from custom_components.weatherflow_lightning_trilateration.sensor import WeatherFlowStrikeRateSensor
+
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    sensor = WeatherFlowStrikeRateSensor(coordinator, mock_entry)
+
+    # Initial state
+    assert sensor.native_value == 0
+
+    # Simulate strike event message
+    timestamp = 1782640276
+    message = {"type": "evt_strike", "device_id": 309874, "evt": [timestamp, 17.0, 3848]}
+
+    with patch("time.time", return_value=timestamp):
+        coordinator._process_incoming_message(message)
+
+    assert sensor.native_value == 1
+    assert coordinator.recent_strike_timestamps == [timestamp]
+
+    # Simulate time passing (65 seconds later)
+    message_new = {"type": "evt_strike", "device_id": 309874, "evt": [timestamp + 65, 12.0, 3849]}
+    with patch("time.time", return_value=timestamp + 65):
+        coordinator._process_incoming_message(message_new)
+
+    # Stale strike should be pruned, new one added
+    assert sensor.native_value == 1
+    assert coordinator.recent_strike_timestamps == [timestamp + 65]
+
 
 
