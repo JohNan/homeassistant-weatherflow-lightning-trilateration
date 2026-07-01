@@ -453,17 +453,13 @@ class TempestStrikeCoordinator:
 
         self.primary_station = str(entry.data.get(CONF_PRIMARY_STATION, "")).strip()
         neighbor_raw = str(
-            entry.options.get(
-                CONF_NEIGHBOR_STATIONS, entry.data.get(CONF_NEIGHBOR_STATIONS, "")
-            )
+            entry.options.get(CONF_NEIGHBOR_STATIONS, entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
         )
         self.neighbor_stations = [s.strip() for s in neighbor_raw.split(",") if s.strip()]
         self.api_token = str(
             entry.options.get(CONF_API_TOKEN, entry.data.get(CONF_API_TOKEN, ""))
         ).strip()
-        self.distance_filter = float(
-            entry.options.get(CONF_DISTANCE_FILTER, 100.0)
-        )
+        self.distance_filter = float(entry.options.get(CONF_DISTANCE_FILTER, 100.0))
         self.all_stations = [self.primary_station] + self.neighbor_stations
 
         # Parse coordinate if primary station is coordinates

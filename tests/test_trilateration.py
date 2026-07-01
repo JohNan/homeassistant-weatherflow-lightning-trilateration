@@ -25,16 +25,20 @@ mock_helpers.aiohttp_client = MagicMock()
 mock_helpers.event = MagicMock()
 mock_helpers.entity_platform = MagicMock()
 
+
 class MockSensorEntity:
     pass
 
+
 mock_sensor = MagicMock()
 mock_sensor.SensorEntity = MockSensorEntity
+
 
 class MockConfigFlow:
     @classmethod
     def __init_subclass__(cls, **kwargs):
         pass
+
 
 class MockOptionsFlow:
     @classmethod
@@ -43,6 +47,7 @@ class MockOptionsFlow:
 
     def async_create_entry(self, title, data):
         return {"type": "create_entry", "title": title, "data": data}
+
 
 mock_config_entries = MagicMock()
 mock_config_entries.ConfigFlow = MockConfigFlow
@@ -212,11 +217,11 @@ def test_station_strikes_tracking(mock_hass, mock_entry):
 
 def test_osm_vector_cache_invalidation(mock_hass, mock_entry):
     import asyncio
-    import os
-    from unittest.mock import patch, mock_open, AsyncMock
+    from unittest.mock import AsyncMock, mock_open, patch
 
     # Configure mock path return values
     paths_queried = []
+
     def mock_path_builder(filename):
         paths_queried.append(filename)
         return f"/mock/path/{filename}"
@@ -227,7 +232,7 @@ def test_osm_vector_cache_invalidation(mock_hass, mock_entry):
     mock_hass.config.path = mock_path_builder
     mock_hass.async_add_executor_job = mock_async_add_executor_job
     coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
-    
+
     # Mock coordinates and primary station
     coordinator.primary_station = "172103"
     coordinator.station_coords = {"172103": (59.847, 17.61482)}
@@ -235,33 +240,43 @@ def test_osm_vector_cache_invalidation(mock_hass, mock_entry):
     # Mock dynamic OS operations
     exists_mock = MagicMock(return_value=False)
     remove_mock = MagicMock()
-    listdir_mock = MagicMock(return_value=["vector_cache_172103_59_847_17_61482.json", "vector_cache_172103_different.json"])
-    
+    listdir_mock = MagicMock(
+        return_value=[
+            "vector_cache_172103_59_847_17_61482.json",
+            "vector_cache_172103_different.json",
+        ]
+    )
+
     # Mock HTTP client responses
     mock_resp = AsyncMock()
     mock_resp.status = 200
     mock_resp.json = AsyncMock(return_value={"elements": []})
-    
+
     mock_ctx = MagicMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
-    
+
     mock_session = MagicMock()
     mock_session.post = MagicMock(return_value=mock_ctx)
 
-    with patch("custom_components.weatherflow_lightning_trilateration.async_get_clientsession", return_value=mock_session), \
-         patch("os.path.exists", exists_mock), \
-         patch("os.makedirs") as makedirs_mock, \
-         patch("os.listdir", listdir_mock), \
-         patch("os.remove", remove_mock), \
-         patch("builtins.open", mock_open()) as open_mock:
-        
+    with (
+        patch(
+            "custom_components.weatherflow_lightning_trilateration.async_get_clientsession",
+            return_value=mock_session,
+        ),
+        patch("os.path.exists", exists_mock),
+        patch("os.makedirs"),
+        patch("os.listdir", listdir_mock),
+        patch("os.remove", remove_mock),
+        patch("builtins.open", mock_open()),
+    ):
+
         # Trigger cache fetch with first coords
         asyncio.run(coordinator._async_fetch_vector_data())
-        
+
         # Check cache filename constructed correctly
         assert any("vector_cache_172103_59_847_17_61482.json" in p for p in paths_queried)
-        
+
         # Verify old cache cleanup was called (vector_cache_172103_different.json should be removed)
         # Verify vector_cache_172103_59_847_17_61482.json was NOT removed
         remove_calls = [c[0][0] for c in remove_mock.call_args_list]
@@ -300,9 +315,11 @@ def test_mlat_calculation_n4(mock_hass, mock_entry):
 
 
 def test_strike_rate_sensor_tracking(mock_hass, mock_entry):
-    import time
     from unittest.mock import patch
-    from custom_components.weatherflow_lightning_trilateration.sensor import WeatherFlowStrikeRateSensor
+
+    from custom_components.weatherflow_lightning_trilateration.sensor import (
+        WeatherFlowStrikeRateSensor,
+    )
 
     coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
     sensor = WeatherFlowStrikeRateSensor(coordinator, mock_entry)
@@ -332,7 +349,10 @@ def test_strike_rate_sensor_tracking(mock_hass, mock_entry):
 
 def test_options_flow_handler(mock_hass, mock_entry):
     import asyncio
-    from custom_components.weatherflow_lightning_trilateration.config_flow import TempestTrilaterationOptionsFlowHandler
+
+    from custom_components.weatherflow_lightning_trilateration.config_flow import (
+        TempestTrilaterationOptionsFlowHandler,
+    )
 
     mock_entry.options = {
         "neighbor_stations": "215396,81149",
@@ -353,7 +373,3 @@ def test_options_flow_handler(mock_hass, mock_entry):
 
     assert result["type"] == "create_entry"
     assert result["data"] == user_input
-
-
-
-

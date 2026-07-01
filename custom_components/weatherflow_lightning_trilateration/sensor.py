@@ -196,4 +196,3 @@ class WeatherFlowStrikeRateSensor(SensorEntity):
         """Update the sensor."""
         # The coordinator updates its internal lists, this method triggers a state refresh
         pass
-

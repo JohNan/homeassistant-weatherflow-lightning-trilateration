@@ -173,15 +173,12 @@ class TempestTrilaterationOptionsFlowHandler(config_entries.OptionsFlow):
 
         data_schema = vol.Schema(
             {
-                vol.Optional(
-                    CONF_NEIGHBOR_STATIONS, default=current_neighbor_stations
-                ): str,
+                vol.Optional(CONF_NEIGHBOR_STATIONS, default=current_neighbor_stations): str,
                 vol.Optional(CONF_API_TOKEN, default=current_api_token): str,
-                vol.Optional(
-                    CONF_DISTANCE_FILTER, default=current_distance_filter
-                ): vol.Coerce(float),
+                vol.Optional(CONF_DISTANCE_FILTER, default=current_distance_filter): vol.Coerce(
+                    float
+                ),
             }
         )
 
         return self.async_show_form(step_id="init", data_schema=data_schema)
-
