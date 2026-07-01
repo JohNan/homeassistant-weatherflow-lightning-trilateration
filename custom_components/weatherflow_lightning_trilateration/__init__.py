@@ -970,8 +970,11 @@ class TempestStrikeCoordinator:
             return
 
         ref_lat, ref_lon = primary_coords
+        safe_primary = str(self.primary_station).replace(",", "_").replace(" ", "_")
+        safe_coords = f"{ref_lat}_{ref_lon}".replace(".", "_")
+        cache_filename = f"vector_cache_{safe_primary}_{safe_coords}.json"
         cache_path = self.hass.config.path(
-            "custom_components/weatherflow_lightning_trilateration/vector_cache_v2.json"
+            f"custom_components/weatherflow_lightning_trilateration/{cache_filename}"
         )
 
         if os.path.exists(cache_path):
@@ -1014,7 +1017,17 @@ class TempestStrikeCoordinator:
                         processed = self._process_vector_data(raw_data)
 
                         def _write_cache() -> None:
-                            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                            cache_dir = os.path.dirname(cache_path)
+                            os.makedirs(cache_dir, exist_ok=True)
+
+                            for f_name in os.listdir(cache_dir):
+                                if f_name.startswith("vector_cache_") and f_name.endswith(".json"):
+                                    if f_name != cache_filename:
+                                        try:
+                                            os.remove(os.path.join(cache_dir, f_name))
+                                        except OSError:
+                                            pass
+
                             with open(cache_path, "w", encoding="utf-8") as f:
                                 json.dump(processed, f, ensure_ascii=False, indent=2)
 
@@ -1513,8 +1526,20 @@ class WeatherFlowVectorDataView(HomeAssistantView):
         if not coordinator:
             return self.json({"water": [], "forest": []})
 
+        primary_coords = coordinator.station_coords.get(coordinator.primary_station)
+        if not primary_coords:
+            primary_coords = coordinator._get_station_coords(coordinator.primary_station)
+
+        if not primary_coords:
+            return self.json({"water": [], "forest": []})
+
+        ref_lat, ref_lon = primary_coords
+
+        safe_primary = str(coordinator.primary_station).replace(",", "_").replace(" ", "_")
+        safe_coords = f"{ref_lat}_{ref_lon}".replace(".", "_")
+        cache_filename = f"vector_cache_{safe_primary}_{safe_coords}.json"
         cache_path = self.hass.config.path(
-            "custom_components/weatherflow_lightning_trilateration/vector_cache_v2.json"
+            f"custom_components/weatherflow_lightning_trilateration/{cache_filename}"
         )
         if os.path.exists(cache_path):
             try:
