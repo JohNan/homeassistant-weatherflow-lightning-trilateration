@@ -13,8 +13,9 @@ A native Home Assistant custom integration that connects to the WeatherFlow Temp
 
 ## Features
 - **WebSocket Listener:** Connects directly to the official WeatherFlow WebSocket stream.
-- **Auto-Discovery:** Automatically detects configured local weather station IDs from existing official/third-party WeatherFlow integrations.
-- **Trilateration Engine:** Employs a flat-plane Cramer's rule approximation to dynamically calculate the intersection of lightning strike distances from 3 or more stations.
+- **Auto-Discovery & Options Flow:** Automatically detects configured local weather station IDs from existing official/third-party WeatherFlow integrations. Supports live runtime re-configuration of neighbor station IDs, API access tokens, and distance filter parameters via Home Assistant Integration Options.
+- **Advanced Trilateration Engine:** Employs an $N$-station Least-Squares geographic intersection solver for $N \ge 3$ stations. Collects strike events across all configured stations using a 1.5-second delayed synchronization buffer to minimize calculation jitter.
+- **Strike Rate Sensor:** Automatically exposes a rolling `strikes/min` sensor entity (`sensor.weatherflow_strike_rate`) calculated dynamically using a 60-second sliding window.
 - **Map Visualizations:** Places temporary geolocation markers representing strikes on the map, which automatically disappear after 6 hours.
 - **Simulation/Testing Service:** Exposes a custom service to trigger simulated strikes anywhere, allowing end-to-end testing of map markers and dashboard animations.
 - **3D WebGL Dashboard Card:** Includes an advanced 3D visualizer Lovelace card showcasing:
@@ -24,6 +25,9 @@ A native Home Assistant custom integration that connects to the WeatherFlow Temp
   - *Auto-Orbit:* Slow idle camera rotation when no user interaction is detected.
   - *Volumetric Bolt Glows:* Blends additive canvas-based particle glow sprites at strike terminal points.
   - *Timeline-Synchronized Heatmap:* Storm path decay tracker preserving recent strikes as shrinking, fading amber indicators matching the virtual timeline playback speed.
+  - *Adaptive Day/Night Ambient Shading:* Integrates with the Home Assistant `sun.sun` elevation sensor to scale scene brightness dynamically from bright daylight down to starlit night skies, with an automated fallback to solar radiation telemetry.
+  - *WebGL Memory Management:* Implements strict WebGL resource eviction and GPU/CPU memory cleanups to avoid resource leaks during dashboard reloads.
+  - *Collision-Resistant Cache:* Automatically segregates Overpass API vector data cache filenames by primary station ID and geocoordinates, pruning stale cache files on write.
 - **Robust Connection Handling:** Automatically handles connection drops with exponential backoff retries.
 
 ---
@@ -123,14 +127,13 @@ To visually test the entire mapping and 3D animation stack without waiting for a
 ---
 
 ## Mathematical Design
-The trilateration algorithm projects spherical geodetic coordinates to a local Cartesian plane relative to the primary station coordinates (using an Equirectangular projection). Given three non-collinear stations $S_i$ with known coordinates $(x_i, y_i)$ and strike distances $d_i$:
+The $N$-station trilateration algorithm projects spherical geodetic coordinates to a local Cartesian plane relative to the primary station coordinates (using an Equirectangular projection). Given $N$ weather stations $S_i$ with known coordinates $(x_i, y_i)$ and reported strike distances $d_i$:
 
 1. Formulates the equations of intersection:
    $$(x - x_i)^2 + (y - y_i)^2 = d_i^2$$
-2. Subtracts equation 2 from 1, and 3 from 2 to linearize the system:
-   $$Ax + By = C$$
-   $$Dx + Ey = F$$
-3. Solves for $(x, y)$ analytically using Cramer's rule:
-   $$\text{det} = AE - BD$$
-   $$x = \frac{CE - BF}{\text{det}}, \quad y = \frac{AF - CD}{\text{det}}$$
-4. Transforms $(x, y)$ back to latitude and longitude, firing the `weatherflow_strike_calculated` event.
+2. Linearizes the system by subtracting the equations to obtain a matrix equation of the form:
+   $$\mathbf{A}\mathbf{x} = \mathbf{b}$$
+3. Solves the overdetermined linear system of equations (when $N \ge 3$) using a Least-Squares optimization method:
+   $$\mathbf{x} = (\mathbf{A}^T\mathbf{A})^{-1}\mathbf{A}^T\mathbf{b}$$
+4. Transforms the resulting local Cartesian coordinates $(x, y)$ back to spherical geodetic latitude and longitude coordinates.
+5. Fires the `weatherflow_strike_calculated` event and updates the Home Assistant map and custom 3D WebGL dashboard card.

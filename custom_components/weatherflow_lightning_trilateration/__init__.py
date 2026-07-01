@@ -17,10 +17,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 from websockets.connection import State as WsState
 
 from .const import (
     CONF_API_TOKEN,
+    CONF_DISTANCE_FILTER,
     CONF_NAME,
     CONF_NEIGHBOR_STATIONS,
     CONF_PRIMARY_STATION,
@@ -242,7 +244,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _LOGGER.debug("Forwarding config entry setups to platforms: ['geo_location', 'sensor']")
     await hass.config_entries.async_forward_entry_setups(entry, ["geo_location", "sensor"])
+
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+
     return True
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload config entry when options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -426,6 +436,7 @@ class TempestStrikeCoordinator:
         self.entry = entry
         self.instance_name = str(entry.data.get(CONF_NAME, entry.entry_id[:8])).strip()
         self.strike_buffer = {}
+        self._strike_timers = {}
         self.station_coords = {}
         self.device_to_station = {}
         self.device_ids = set()
@@ -433,6 +444,7 @@ class TempestStrikeCoordinator:
         self.station_strikes = {}
         self.station_last_strike = {}
         self.station_names = {}
+        self.recent_strike_timestamps = []
         self._listeners = []
         self.wind_speed = 0.0
         self.wind_direction = 0.0
@@ -440,9 +452,14 @@ class TempestStrikeCoordinator:
         self.rain_rate = 0.0
 
         self.primary_station = str(entry.data.get(CONF_PRIMARY_STATION, "")).strip()
-        neighbor_raw = str(entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
+        neighbor_raw = str(
+            entry.options.get(CONF_NEIGHBOR_STATIONS, entry.data.get(CONF_NEIGHBOR_STATIONS, ""))
+        )
         self.neighbor_stations = [s.strip() for s in neighbor_raw.split(",") if s.strip()]
-        self.api_token = str(entry.data.get(CONF_API_TOKEN, "")).strip()
+        self.api_token = str(
+            entry.options.get(CONF_API_TOKEN, entry.data.get(CONF_API_TOKEN, ""))
+        ).strip()
+        self.distance_filter = float(entry.options.get(CONF_DISTANCE_FILTER, 100.0))
         self.all_stations = [self.primary_station] + self.neighbor_stations
 
         # Parse coordinate if primary station is coordinates
@@ -882,13 +899,14 @@ class TempestStrikeCoordinator:
                 if coords:
                     lat, lon = coords
                     dist = self._calculate_distance(ref_lat, ref_lon, lat, lon)
-                    if dist <= 100.0:
+                    if dist <= self.distance_filter:
                         filtered_stations.append(station_id)
                     else:
                         _LOGGER.warning(
-                            "Filtering out station %s because it is too far (%.1f km) from primary station",
+                            "Filtering out station %s because it is too far (%.1f km > %.1f km) from primary station",
                             station_id,
                             dist,
+                            self.distance_filter,
                         )
                 else:
                     # Keep stations with unresolved coordinates for now so we can still try to listen
@@ -970,8 +988,11 @@ class TempestStrikeCoordinator:
             return
 
         ref_lat, ref_lon = primary_coords
+        safe_primary = str(self.primary_station).replace(",", "_").replace(" ", "_")
+        safe_coords = f"{ref_lat}_{ref_lon}".replace(".", "_")
+        cache_filename = f"vector_cache_{safe_primary}_{safe_coords}.json"
         cache_path = self.hass.config.path(
-            "custom_components/weatherflow_lightning_trilateration/vector_cache_v2.json"
+            f"custom_components/weatherflow_lightning_trilateration/{cache_filename}"
         )
 
         if os.path.exists(cache_path):
@@ -1014,7 +1035,17 @@ class TempestStrikeCoordinator:
                         processed = self._process_vector_data(raw_data)
 
                         def _write_cache() -> None:
-                            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                            cache_dir = os.path.dirname(cache_path)
+                            os.makedirs(cache_dir, exist_ok=True)
+
+                            for f_name in os.listdir(cache_dir):
+                                if f_name.startswith("vector_cache_") and f_name.endswith(".json"):
+                                    if f_name != cache_filename:
+                                        try:
+                                            os.remove(os.path.join(cache_dir, f_name))
+                                        except OSError:
+                                            pass
+
                             with open(cache_path, "w", encoding="utf-8") as f:
                                 json.dump(processed, f, ensure_ascii=False, indent=2)
 
@@ -1260,6 +1291,16 @@ class TempestStrikeCoordinator:
 
     def _process_incoming_message(self, message_data: dict) -> None:
         """Process an incoming WebSocket message."""
+        now_time = time.time()
+
+        # Clean up old timestamps (older than 60 seconds)
+        original_length = len(self.recent_strike_timestamps)
+        self.recent_strike_timestamps = [
+            ts for ts in self.recent_strike_timestamps if now_time - ts <= 60
+        ]
+        if len(self.recent_strike_timestamps) < original_length:
+            self.async_update_listeners()
+
         msg_type = message_data.get("type")
         _LOGGER.debug("Processing WebSocket message of type: %s", msg_type)
 
@@ -1320,72 +1361,97 @@ class TempestStrikeCoordinator:
         if matched_timestamp is None:
             matched_timestamp = timestamp
             self.strike_buffer[matched_timestamp] = {}
+            self.recent_strike_timestamps.append(timestamp)
             _LOGGER.info("Created new strike buffer bucket for timestamp %d", matched_timestamp)
+
+            def _process_bucket(_: object) -> None:
+                """Process a bucket of strike events after a short delay."""
+                # The timer executed, remove it from the tracking dict
+                if matched_timestamp in self._strike_timers:
+                    del self._strike_timers[matched_timestamp]
+
+                bucket = self.strike_buffer.get(matched_timestamp)
+                if not bucket:
+                    return
+
+                _LOGGER.info("Processing strike buffer bucket %d: %s", matched_timestamp, bucket)
+
+                strike_events = []
+                for dev_id, dist in list(bucket.items()):
+                    coords = self._get_station_coords(dev_id)
+                    if coords:
+                        strike_events.append((coords[0], coords[1], dist))
+
+                if len(strike_events) >= 3:
+                    _LOGGER.info(
+                        "Invoking MLAT calculation with coordinates/distances: %s", strike_events
+                    )
+                    self._calculate_trilateration(strike_events)
+
+                # Evict from buffer to prevent reprocessing
+                del self.strike_buffer[matched_timestamp]
+
+            # Allow 1.5 seconds to collect all N stations
+            timer = async_call_later(self.hass, 1.5, _process_bucket)
+            self._strike_timers[matched_timestamp] = timer
 
         self.strike_buffer[matched_timestamp][station_id] = distance
         bucket = self.strike_buffer[matched_timestamp]
         _LOGGER.info("Current strike buffer status for bucket %d: %s", matched_timestamp, bucket)
 
-        # Check if the bucket has at least 3 unique station reports
-        if len(bucket) >= 3:
-            strike_events = []
-            for dev_id, dist in list(bucket.items()):
-                coords = self._get_station_coords(dev_id)
-                if coords:
-                    strike_events.append((coords[0], coords[1], dist))
-
-            _LOGGER.info(
-                "Clearing bucket %d from buffer and invoking trilateration calculations",
-                matched_timestamp,
-            )
-            # Evict from buffer to prevent reprocessing
-            del self.strike_buffer[matched_timestamp]
-
-            if len(strike_events) >= 3:
-                _LOGGER.info("Invoking trilateration with coordinates/distances: %s", strike_events)
-                self._calculate_trilateration(strike_events)
-
         # Cleanup old entries to prevent memory leak
         for bucket_ts in list(self.strike_buffer.keys()):
+            # Fallback cleanup for very old buckets (e.g. if a timer was cancelled or failed)
             if timestamp - bucket_ts > 10:
                 del self.strike_buffer[bucket_ts]
+                if bucket_ts in self._strike_timers:
+                    timer = self._strike_timers.pop(bucket_ts)
+                    timer()  # Cancel timer
 
     def _calculate_trilateration(self, strike_events: list) -> None:
-        """Calculate the geographic intersection of three distances."""
+        """Calculate the geographic intersection of multiple distances using least-squares."""
         if len(strike_events) < 3:
             return
-
-        lat1, lon1, d1 = strike_events[0]
-        lat2, lon2, d2 = strike_events[1]
-        lat3, lon3, d3 = strike_events[2]
 
         # Earth radius in kilometers
         R = 6371.0
 
+        lat1, lon1, d1 = strike_events[0]
         lat1_rad = math.radians(lat1)
         cos_lat1 = math.cos(lat1_rad)
 
-        # Project coordinates onto a flat Cartesian plane relative to (lat1, lon1)
-        x1, y1 = 0.0, 0.0
-        x2 = R * math.radians(lon2 - lon1) * cos_lat1
-        y2 = R * math.radians(lat2 - lat1)
-        x3 = R * math.radians(lon3 - lon1) * cos_lat1
-        y3 = R * math.radians(lat3 - lat1)
+        M11 = 0.0
+        M12 = 0.0
+        M22 = 0.0
+        V1 = 0.0
+        V2 = 0.0
 
-        A = 2 * (x2 - x1)
-        B = 2 * (y2 - y1)
-        C = d1**2 - d2**2 - x1**2 + x2**2 - y1**2 + y2**2
-        D = 2 * (x3 - x2)
-        E = 2 * (y3 - y2)
-        F = d2**2 - d3**2 - x2**2 + x3**2 - y2**2 + y3**2
+        for i in range(1, len(strike_events)):
+            lat_i, lon_i, d_i = strike_events[i]
 
-        det = A * E - B * D
+            # Project coordinates onto a flat Cartesian plane relative to (lat1, lon1)
+            x_i = R * math.radians(lon_i - lon1) * cos_lat1
+            y_i = R * math.radians(lat_i - lat1)
+
+            A_i1 = 2 * x_i
+            A_i2 = 2 * y_i
+            b_i = (d1**2) - (d_i**2) + (x_i**2) + (y_i**2)
+
+            M11 += A_i1 * A_i1
+            M12 += A_i1 * A_i2
+            M22 += A_i2 * A_i2
+
+            V1 += A_i1 * b_i
+            V2 += A_i2 * b_i
+
+        det = M11 * M22 - M12 * M12
         if abs(det) < 1e-9:
             _LOGGER.warning("Collinear station arrangement or invalid distance data detected.")
             return
 
-        x = (C * E - B * F) / det
-        y = (A * F - C * D) / det
+        # x = (A^T A)^-1 A^T b
+        x = (M22 * V1 - M12 * V2) / det
+        y = (-M12 * V1 + M11 * V2) / det
 
         delta_lat = y / R
         delta_lon = x / (R * cos_lat1)
@@ -1431,7 +1497,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=5275dce"
+    url = f"{base_url}?v=cd100a9"
 
     existing_item = None
     if hasattr(resources, "async_items"):
@@ -1513,8 +1579,20 @@ class WeatherFlowVectorDataView(HomeAssistantView):
         if not coordinator:
             return self.json({"water": [], "forest": []})
 
+        primary_coords = coordinator.station_coords.get(coordinator.primary_station)
+        if not primary_coords:
+            primary_coords = coordinator._get_station_coords(coordinator.primary_station)
+
+        if not primary_coords:
+            return self.json({"water": [], "forest": []})
+
+        ref_lat, ref_lon = primary_coords
+
+        safe_primary = str(coordinator.primary_station).replace(",", "_").replace(" ", "_")
+        safe_coords = f"{ref_lat}_{ref_lon}".replace(".", "_")
+        cache_filename = f"vector_cache_{safe_primary}_{safe_coords}.json"
         cache_path = self.hass.config.path(
-            "custom_components/weatherflow_lightning_trilateration/vector_cache_v2.json"
+            f"custom_components/weatherflow_lightning_trilateration/{cache_filename}"
         )
         if os.path.exists(cache_path):
             try:

@@ -22,7 +22,10 @@ async def async_setup_entry(
     )
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities = [WeatherFlowTrilaterationSensor(coordinator, entry)]
+    entities = [
+        WeatherFlowTrilaterationSensor(coordinator, entry),
+        WeatherFlowStrikeRateSensor(coordinator, entry),
+    ]
 
     # Register a separate sensor for each configured station to monitor individual strike counts
     for station_id in coordinator.all_stations:
@@ -156,3 +159,40 @@ class WeatherFlowStationStrikesSensor(SensorEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Call when entity will be removed from HASS."""
         self._coordinator.async_remove_listener(self.async_write_ha_state)
+
+
+class WeatherFlowStrikeRateSensor(SensorEntity):
+    """Representation of a WeatherFlow Strike Rate Sensor (Strikes per Minute)."""
+
+    def __init__(self, coordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self._coordinator = coordinator
+        self._entry = entry
+        self._attr_name = f"{coordinator.instance_name} Strike Rate"
+        self._attr_unique_id = f"{entry.entry_id}_strike_rate"
+        self._attr_icon = "mdi:flash"
+        self._attr_native_unit_of_measurement = "strikes/min"
+
+        _LOGGER.debug(
+            "Initialized WeatherFlowStrikeRateSensor: name=%s, unique_id=%s",
+            self._attr_name,
+            self._attr_unique_id,
+        )
+
+    @property
+    def native_value(self) -> int:
+        """Return the native value of the sensor (count of recent strikes)."""
+        return len(self._coordinator.recent_strike_timestamps)
+
+    async def async_added_to_hass(self) -> None:
+        """Call when entity is added to hass."""
+        self._coordinator.async_add_listener(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Call when entity will be removed from HASS."""
+        self._coordinator.async_remove_listener(self.async_write_ha_state)
+
+    async def async_update(self) -> None:
+        """Update the sensor."""
+        # The coordinator updates its internal lists, this method triggers a state refresh
+        pass

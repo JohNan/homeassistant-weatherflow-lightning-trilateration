@@ -2,15 +2,29 @@
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_API_TOKEN, CONF_NAME, CONF_NEIGHBOR_STATIONS, CONF_PRIMARY_STATION, DOMAIN
+from .const import (
+    CONF_API_TOKEN,
+    CONF_DISTANCE_FILTER,
+    CONF_NAME,
+    CONF_NEIGHBOR_STATIONS,
+    CONF_PRIMARY_STATION,
+    DOMAIN,
+)
 
 
 class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for WeatherFlow Lightning Trilateration."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        """Get the options flow for this handler."""
+        return TempestTrilaterationOptionsFlowHandler(config_entry)
 
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
@@ -134,3 +148,37 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             pass
 
         return None
+
+
+class TempestTrilaterationOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for the WeatherFlow Lightning Trilateration integration."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(self, user_input=None):
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        options = self.config_entry.options
+        data = self.config_entry.data
+
+        current_neighbor_stations = options.get(
+            CONF_NEIGHBOR_STATIONS, data.get(CONF_NEIGHBOR_STATIONS, "")
+        )
+        current_api_token = options.get(CONF_API_TOKEN, data.get(CONF_API_TOKEN, ""))
+        current_distance_filter = options.get(CONF_DISTANCE_FILTER, 100.0)
+
+        data_schema = vol.Schema(
+            {
+                vol.Optional(CONF_NEIGHBOR_STATIONS, default=current_neighbor_stations): str,
+                vol.Optional(CONF_API_TOKEN, default=current_api_token): str,
+                vol.Optional(CONF_DISTANCE_FILTER, default=current_distance_filter): vol.Coerce(
+                    float
+                ),
+            }
+        )
+
+        return self.async_show_form(step_id="init", data_schema=data_schema)
