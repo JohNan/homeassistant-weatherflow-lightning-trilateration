@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 from websockets.connection import State as WsState
 
 from .const import (
@@ -426,6 +427,7 @@ class TempestStrikeCoordinator:
         self.entry = entry
         self.instance_name = str(entry.data.get(CONF_NAME, entry.entry_id[:8])).strip()
         self.strike_buffer = {}
+        self._strike_timers = {}
         self.station_coords = {}
         self.device_to_station = {}
         self.device_ids = set()
@@ -1335,70 +1337,94 @@ class TempestStrikeCoordinator:
             self.strike_buffer[matched_timestamp] = {}
             _LOGGER.info("Created new strike buffer bucket for timestamp %d", matched_timestamp)
 
+            def _process_bucket(_: object) -> None:
+                """Process a bucket of strike events after a short delay."""
+                # The timer executed, remove it from the tracking dict
+                if matched_timestamp in self._strike_timers:
+                    del self._strike_timers[matched_timestamp]
+
+                bucket = self.strike_buffer.get(matched_timestamp)
+                if not bucket:
+                    return
+
+                _LOGGER.info("Processing strike buffer bucket %d: %s", matched_timestamp, bucket)
+
+                strike_events = []
+                for dev_id, dist in list(bucket.items()):
+                    coords = self._get_station_coords(dev_id)
+                    if coords:
+                        strike_events.append((coords[0], coords[1], dist))
+
+                if len(strike_events) >= 3:
+                    _LOGGER.info(
+                        "Invoking MLAT calculation with coordinates/distances: %s", strike_events
+                    )
+                    self._calculate_trilateration(strike_events)
+
+                # Evict from buffer to prevent reprocessing
+                del self.strike_buffer[matched_timestamp]
+
+            # Allow 1.5 seconds to collect all N stations
+            timer = async_call_later(self.hass, 1.5, _process_bucket)
+            self._strike_timers[matched_timestamp] = timer
+
         self.strike_buffer[matched_timestamp][station_id] = distance
         bucket = self.strike_buffer[matched_timestamp]
         _LOGGER.info("Current strike buffer status for bucket %d: %s", matched_timestamp, bucket)
 
-        # Check if the bucket has at least 3 unique station reports
-        if len(bucket) >= 3:
-            strike_events = []
-            for dev_id, dist in list(bucket.items()):
-                coords = self._get_station_coords(dev_id)
-                if coords:
-                    strike_events.append((coords[0], coords[1], dist))
-
-            _LOGGER.info(
-                "Clearing bucket %d from buffer and invoking trilateration calculations",
-                matched_timestamp,
-            )
-            # Evict from buffer to prevent reprocessing
-            del self.strike_buffer[matched_timestamp]
-
-            if len(strike_events) >= 3:
-                _LOGGER.info("Invoking trilateration with coordinates/distances: %s", strike_events)
-                self._calculate_trilateration(strike_events)
-
         # Cleanup old entries to prevent memory leak
         for bucket_ts in list(self.strike_buffer.keys()):
+            # Fallback cleanup for very old buckets (e.g. if a timer was cancelled or failed)
             if timestamp - bucket_ts > 10:
                 del self.strike_buffer[bucket_ts]
+                if bucket_ts in self._strike_timers:
+                    timer = self._strike_timers.pop(bucket_ts)
+                    timer()  # Cancel timer
 
     def _calculate_trilateration(self, strike_events: list) -> None:
-        """Calculate the geographic intersection of three distances."""
+        """Calculate the geographic intersection of multiple distances using least-squares."""
         if len(strike_events) < 3:
             return
-
-        lat1, lon1, d1 = strike_events[0]
-        lat2, lon2, d2 = strike_events[1]
-        lat3, lon3, d3 = strike_events[2]
 
         # Earth radius in kilometers
         R = 6371.0
 
+        lat1, lon1, d1 = strike_events[0]
         lat1_rad = math.radians(lat1)
         cos_lat1 = math.cos(lat1_rad)
 
-        # Project coordinates onto a flat Cartesian plane relative to (lat1, lon1)
-        x1, y1 = 0.0, 0.0
-        x2 = R * math.radians(lon2 - lon1) * cos_lat1
-        y2 = R * math.radians(lat2 - lat1)
-        x3 = R * math.radians(lon3 - lon1) * cos_lat1
-        y3 = R * math.radians(lat3 - lat1)
+        M11 = 0.0
+        M12 = 0.0
+        M22 = 0.0
+        V1 = 0.0
+        V2 = 0.0
 
-        A = 2 * (x2 - x1)
-        B = 2 * (y2 - y1)
-        C = d1**2 - d2**2 - x1**2 + x2**2 - y1**2 + y2**2
-        D = 2 * (x3 - x2)
-        E = 2 * (y3 - y2)
-        F = d2**2 - d3**2 - x2**2 + x3**2 - y2**2 + y3**2
+        for i in range(1, len(strike_events)):
+            lat_i, lon_i, d_i = strike_events[i]
 
-        det = A * E - B * D
+            # Project coordinates onto a flat Cartesian plane relative to (lat1, lon1)
+            x_i = R * math.radians(lon_i - lon1) * cos_lat1
+            y_i = R * math.radians(lat_i - lat1)
+
+            A_i1 = 2 * x_i
+            A_i2 = 2 * y_i
+            b_i = (d1**2) - (d_i**2) + (x_i**2) + (y_i**2)
+
+            M11 += A_i1 * A_i1
+            M12 += A_i1 * A_i2
+            M22 += A_i2 * A_i2
+
+            V1 += A_i1 * b_i
+            V2 += A_i2 * b_i
+
+        det = M11 * M22 - M12 * M12
         if abs(det) < 1e-9:
             _LOGGER.warning("Collinear station arrangement or invalid distance data detected.")
             return
 
-        x = (C * E - B * F) / det
-        y = (A * F - C * D) / det
+        # x = (A^T A)^-1 A^T b
+        x = (M22 * V1 - M12 * V2) / det
+        y = (-M12 * V1 + M11 * V2) / det
 
         delta_lat = y / R
         delta_lon = x / (R * cos_lat1)

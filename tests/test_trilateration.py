@@ -22,6 +22,7 @@ mock_helpers = MagicMock()
 mock_helpers.config_validation = MagicMock()
 mock_helpers.device_registry = MagicMock()
 mock_helpers.aiohttp_client = MagicMock()
+mock_helpers.event = MagicMock()
 
 sys.modules["homeassistant"] = MagicMock()
 sys.modules["homeassistant.components"] = MagicMock()
@@ -32,6 +33,7 @@ sys.modules["homeassistant.helpers"] = mock_helpers
 sys.modules["homeassistant.helpers.config_validation"] = mock_helpers.config_validation
 sys.modules["homeassistant.helpers.device_registry"] = mock_helpers.device_registry
 sys.modules["homeassistant.helpers.aiohttp_client"] = mock_helpers.aiohttp_client
+sys.modules["homeassistant.helpers.event"] = mock_helpers.event
 
 from custom_components.weatherflow_lightning_trilateration import TempestStrikeCoordinator
 from custom_components.weatherflow_lightning_trilateration.const import EVENT_STRIKE_CALCULATED
@@ -226,4 +228,35 @@ def test_osm_vector_cache_invalidation(mock_hass, mock_entry):
         remove_calls = [c[0][0] for c in remove_mock.call_args_list]
         assert any("vector_cache_172103_different.json" in rc for rc in remove_calls)
         assert not any("vector_cache_172103_59_847_17_61482.json" in rc for rc in remove_calls)
+
+
+def test_mlat_calculation_n4(mock_hass, mock_entry):
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+
+    # Target is (40.1, -74.9)
+    target_lat, target_lon = 40.1, -74.9
+    stations = [(40.0, -75.0), (40.15, -74.85), (40.15, -75.15), (39.9, -74.8)]
+    R = 6371.0
+
+    def compute_dist(s_lat, s_lon):
+        cos_lat = math.cos(math.radians(s_lat))
+        return R * math.sqrt(
+            (math.radians(target_lon - s_lon) * cos_lat) ** 2
+            + (math.radians(target_lat - s_lat)) ** 2
+        )
+
+    strike_events = [(lat, lon, compute_dist(lat, lon)) for lat, lon in stations]
+
+    # Run MLAT calculation with N=4
+    coordinator._calculate_trilateration(strike_events)
+
+    # Verify event was fired with the correct coordinates
+    mock_hass.bus.async_fire.assert_called_once()
+    call_args = mock_hass.bus.async_fire.call_args[0]
+    assert call_args[0] == f"{EVENT_STRIKE_CALCULATED}_{mock_entry.entry_id}"
+
+    payload = mock_hass.bus.async_fire.call_args[0][1]
+    assert pytest.approx(payload["latitude"], abs=1e-3) == target_lat
+    assert pytest.approx(payload["longitude"], abs=1e-3) == target_lon
+
 
