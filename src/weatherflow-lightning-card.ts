@@ -1509,8 +1509,22 @@ class WeatherFlowLightningCard extends HTMLElement {
       return;
     }
 
-    const rad = this.solarRadiation !== undefined ? this.solarRadiation : 1000.0;
-    const factor = Math.max(0.0, Math.min(1.0, rad / 1000.0));
+    let factor = 1.0;
+    if (this._hass && this._hass.states['sun.sun']) {
+      const sunState = this._hass.states['sun.sun'];
+      const elevation = sunState.attributes.elevation !== undefined ? parseFloat(sunState.attributes.elevation) : 0;
+      if (elevation > 0) {
+        factor = 1.0;
+      } else if (elevation < -6) {
+        factor = 0.0;
+      } else {
+        factor = (elevation + 6) / 6.0;
+      }
+    } else {
+      // Fallback if sun.sun is unavailable
+      const rad = this.solarRadiation !== undefined ? this.solarRadiation : 1000.0;
+      factor = Math.max(0.0, Math.min(1.0, rad / 1000.0));
+    }
 
     if (this.ambientLight) {
       const nightColor = new THREE.Color(0x334155);
