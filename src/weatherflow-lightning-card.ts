@@ -399,7 +399,62 @@ class WeatherFlowLightningCard extends HTMLElement {
         z-index: 5;
         color: #e2e8f0;
         font-family: var(--paper-font-body1_-_font-family, sans-serif);
-        pointer-events: none;
+        pointer-events: auto;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .weather-telemetry-hud.collapsed {
+        padding: 8px;
+        gap: 0;
+        border-radius: 50%;
+        cursor: pointer;
+        background-color: rgba(15, 23, 42, 0.85);
+        border-color: rgba(56, 189, 248, 0.4);
+      }
+      .hud-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        width: 100%;
+      }
+      .weather-telemetry-hud.collapsed .hud-header {
+        gap: 0;
+        justify-content: center;
+      }
+      .hud-title {
+        font-size: 11px;
+        font-weight: bold;
+        color: #38bdf8;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+      }
+      .weather-telemetry-hud.collapsed .hud-title {
+        display: none;
+      }
+      .hud-toggle-btn {
+        background: none;
+        border: none;
+        color: #94a3b8;
+        cursor: pointer;
+        padding: 4px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s ease;
+      }
+      .hud-toggle-btn:hover {
+        color: #38bdf8;
+        background-color: rgba(56, 189, 248, 0.1);
+      }
+      .hud-content {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        transition: opacity 0.2s ease;
+      }
+      .weather-telemetry-hud.collapsed .hud-content {
+        display: none;
       }
       .hud-row {
         display: flex;
@@ -440,6 +495,31 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.weatherOverlay.className = 'weather-telemetry-hud';
     this.weatherOverlay.style.display = this.config.show_weather !== false ? 'flex' : 'none';
     this.container.appendChild(this.weatherOverlay);
+
+    this.hudCollapsed = false;
+
+    // Prevent interactions on HUD elements from leaking into 3D scene
+    const stopPropagation = (e: Event) => e.stopPropagation();
+    const eventTypes = ['mousedown', 'mousemove', 'mouseup', 'click', 'touchstart', 'touchmove', 'touchend', 'wheel'];
+    eventTypes.forEach((evt) => {
+      this.weatherOverlay.addEventListener(evt, stopPropagation);
+    });
+
+    this.weatherOverlay.addEventListener('click', (e) => {
+      const toggleBtn = (e.target as HTMLElement).closest('.hud-toggle-btn');
+      if (toggleBtn || this.hudCollapsed) {
+        e.stopPropagation();
+        this.hudCollapsed = !this.hudCollapsed;
+        if (this.hudCollapsed) {
+          this.weatherOverlay.classList.add('collapsed');
+          this.weatherOverlay.title = 'Expand Weather HUD';
+        } else {
+          this.weatherOverlay.classList.remove('collapsed');
+          this.weatherOverlay.removeAttribute('title');
+        }
+        this.updateWeatherOverlay();
+      }
+    });
 
     // Interactive helper variables
     this.raycaster = new THREE.Raycaster();
@@ -1361,35 +1441,62 @@ class WeatherFlowLightningCard extends HTMLElement {
     const rainRateStr = (this.rainRate || 0).toFixed(1);
     const windDir = this.windDirection || 0;
 
-    this.weatherOverlay.innerHTML = `
-      <div class="hud-row">
-        <div class="hud-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/>
-          </svg>
-        </div>
-        <div class="hud-data">
-          <div class="hud-label">Wind</div>
-          <div class="hud-value">
-            ${windSpeedStr} m/s
-            <span class="wind-arrow" style="transform: rotate(${windDir}deg); margin-left: 4px;">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="12" y1="19" x2="12" y2="5"></line>
-                <polyline points="5 12 12 5 19 12"></polyline>
-              </svg>
-            </span>
+    if (this.hudCollapsed) {
+      this.weatherOverlay.innerHTML = `
+        <div class="hud-header">
+          <div class="hud-toggle-btn" style="padding: 0;">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 20px; height: 20px;">
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+              <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/>
+            </svg>
           </div>
         </div>
-      </div>
-      <div class="hud-row">
-        <div class="hud-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 22a5 5 0 0 0 5-5c0-2-5-10-5-10S7 15 7 17a5 5 0 0 0 5 5z"/>
+      `;
+      return;
+    }
+
+    this.weatherOverlay.innerHTML = `
+      <div class="hud-header">
+        <div class="hud-title">Telemetry</div>
+        <button class="hud-toggle-btn" title="Minimize Weather HUD">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 14 10 14 10 20"></polyline>
+            <polyline points="20 10 14 10 14 4"></polyline>
+            <line x1="14" y1="10" x2="21" y2="3"></line>
+            <line x1="10" y1="14" x2="3" y2="21"></line>
           </svg>
+        </button>
+      </div>
+      <div class="hud-content">
+        <div class="hud-row">
+          <div class="hud-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/>
+            </svg>
+          </div>
+          <div class="hud-data">
+            <div class="hud-label">Wind</div>
+            <div class="hud-value">
+              ${windSpeedStr} m/s
+              <span class="wind-arrow" style="transform: rotate(${windDir}deg); margin-left: 4px;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" y1="19" x2="12" y2="5"></line>
+                  <polyline points="5 12 12 5 19 12"></polyline>
+                </svg>
+              </span>
+            </div>
+          </div>
         </div>
-        <div class="hud-data">
-          <div class="hud-label">Precipitation</div>
-          <div class="hud-value">${rainRateStr} mm/h</div>
+        <div class="hud-row">
+          <div class="hud-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22a5 5 0 0 0 5-5c0-2-5-10-5-10S7 15 7 17a5 5 0 0 0 5 5z"/>
+            </svg>
+          </div>
+          <div class="hud-data">
+            <div class="hud-label">Precipitation</div>
+            <div class="hud-value">${rainRateStr} mm/h</div>
+          </div>
         </div>
       </div>
     `;
