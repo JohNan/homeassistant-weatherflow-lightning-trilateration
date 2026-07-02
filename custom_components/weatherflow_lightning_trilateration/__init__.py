@@ -1381,12 +1381,28 @@ class TempestStrikeCoordinator:
                     coords = self._get_station_coords(dev_id)
                     if coords:
                         strike_events.append((coords[0], coords[1], dist))
+                    else:
+                        _LOGGER.warning(
+                            "Trilateration: Could not resolve coordinates for station/device: %s",
+                            dev_id,
+                        )
 
                 if len(strike_events) >= 3:
                     _LOGGER.info(
                         "Invoking MLAT calculation with coordinates/distances: %s", strike_events
                     )
                     self._calculate_trilateration(strike_events)
+                else:
+                    station_info = []
+                    for dev_id, dist in list(bucket.items()):
+                        name = self.station_names.get(dev_id, dev_id)
+                        station_info.append(f"{name} ({dist} km)")
+                    _LOGGER.info(
+                        "Trilateration could not be calculated: only %d stations reported this strike "
+                        "(minimum 3 required). Reporting stations: %s",
+                        len(strike_events),
+                        ", ".join(station_info),
+                    )
 
                 # Evict from buffer to prevent reprocessing
                 del self.strike_buffer[matched_timestamp]
@@ -1497,7 +1513,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=77a3527"
+    url = f"{base_url}?v=aa9ded1"
 
     existing_item = None
     if hasattr(resources, "async_items"):
