@@ -1351,10 +1351,10 @@ class TempestStrikeCoordinator:
         }
         self.async_update_listeners()
 
-        # Find or create a group bucket matching timestamp within a 1-second variance tolerance
+        # Find or create a group bucket matching timestamp within a 3-second variance tolerance
         matched_timestamp = None
         for bucket_ts in list(self.strike_buffer.keys()):
-            if abs(bucket_ts - timestamp) <= 1:
+            if abs(bucket_ts - timestamp) <= 3:
                 matched_timestamp = bucket_ts
                 break
 
@@ -1391,8 +1391,8 @@ class TempestStrikeCoordinator:
                 # Evict from buffer to prevent reprocessing
                 del self.strike_buffer[matched_timestamp]
 
-            # Allow 1.5 seconds to collect all N stations
-            timer = async_call_later(self.hass, 1.5, _process_bucket)
+            # Allow 3.0 seconds to collect all N stations
+            timer = async_call_later(self.hass, 3.0, _process_bucket)
             self._strike_timers[matched_timestamp] = timer
 
         self.strike_buffer[matched_timestamp][station_id] = distance
@@ -1497,7 +1497,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=6bcaf51"
+    url = f"{base_url}?v=2c4d0a0"
 
     existing_item = None
     if hasattr(resources, "async_items"):
