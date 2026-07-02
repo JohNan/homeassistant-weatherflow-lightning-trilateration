@@ -446,6 +446,10 @@ class TempestStrikeCoordinator:
         self.station_names = {}
         self.recent_strike_timestamps = []
         self._listeners = []
+        self.last_trilateration_status = "no_strikes"
+        self.last_trilateration_timestamp = None
+        self.last_trilateration_error = None
+        self.last_trilateration_reporting = []
         self.wind_speed = 0.0
         self.wind_direction = 0.0
         self.solar_radiation = 1000.0
@@ -1387,22 +1391,28 @@ class TempestStrikeCoordinator:
                             dev_id,
                         )
 
+                station_info = []
+                for dev_id, dist in list(bucket.items()):
+                    name = self.station_names.get(dev_id, dev_id)
+                    station_info.append(f"{name} ({dist} km)")
+
                 if len(strike_events) >= 3:
                     _LOGGER.info(
                         "Invoking MLAT calculation with coordinates/distances: %s", strike_events
                     )
-                    self._calculate_trilateration(strike_events)
+                    self._calculate_trilateration(strike_events, station_info)
                 else:
-                    station_info = []
-                    for dev_id, dist in list(bucket.items()):
-                        name = self.station_names.get(dev_id, dev_id)
-                        station_info.append(f"{name} ({dist} km)")
                     _LOGGER.info(
                         "Trilateration could not be calculated: only %d stations reported this strike "
                         "(minimum 3 required). Reporting stations: %s",
                         len(strike_events),
                         ", ".join(station_info),
                     )
+                    self.last_trilateration_status = "insufficient_stations"
+                    self.last_trilateration_timestamp = float(matched_timestamp)
+                    self.last_trilateration_error = f"Only {len(strike_events)} stations reported this strike (minimum 3 required)."
+                    self.last_trilateration_reporting = station_info
+                    self.async_update_listeners()
 
                 # Evict from buffer to prevent reprocessing
                 del self.strike_buffer[matched_timestamp]
@@ -1424,7 +1434,7 @@ class TempestStrikeCoordinator:
                     timer = self._strike_timers.pop(bucket_ts)
                     timer()  # Cancel timer
 
-    def _calculate_trilateration(self, strike_events: list) -> None:
+    def _calculate_trilateration(self, strike_events: list, station_info: list = None) -> None:
         """Calculate the geographic intersection of multiple distances using least-squares."""
         if len(strike_events) < 3:
             return
@@ -1463,6 +1473,11 @@ class TempestStrikeCoordinator:
         det = M11 * M22 - M12 * M12
         if abs(det) < 1e-9:
             _LOGGER.warning("Collinear station arrangement or invalid distance data detected.")
+            self.last_trilateration_status = "collinear"
+            self.last_trilateration_timestamp = time.time()
+            self.last_trilateration_error = "Collinear station arrangement or invalid distance data detected."
+            self.last_trilateration_reporting = station_info or []
+            self.async_update_listeners()
             return
 
         # x = (A^T A)^-1 A^T b
@@ -1481,6 +1496,11 @@ class TempestStrikeCoordinator:
                 calculated_latitude,
                 calculated_longitude,
             )
+            self.last_trilateration_status = "out_of_bounds"
+            self.last_trilateration_timestamp = time.time()
+            self.last_trilateration_error = f"Calculated strike location coords out of bounds: lat={calculated_latitude}, lon={calculated_longitude}."
+            self.last_trilateration_reporting = station_info or []
+            self.async_update_listeners()
             return
 
         _LOGGER.info(
@@ -1488,6 +1508,12 @@ class TempestStrikeCoordinator:
             calculated_latitude,
             calculated_longitude,
         )
+
+        self.last_trilateration_status = "success"
+        self.last_trilateration_timestamp = time.time()
+        self.last_trilateration_error = None
+        self.last_trilateration_reporting = station_info or []
+        self.async_update_listeners()
 
         self.hass.bus.async_fire(
             event_key(self.entry.entry_id),
@@ -1513,7 +1539,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=aa9ded1"
+    url = f"{base_url}?v=2cbc601"
 
     existing_item = None
     if hasattr(resources, "async_items"):

@@ -373,3 +373,29 @@ def test_options_flow_handler(mock_hass, mock_entry):
 
     assert result["type"] == "create_entry"
     assert result["data"] == user_input
+
+
+def test_trilateration_status_sensor(mock_hass, mock_entry):
+    from custom_components.weatherflow_lightning_trilateration.sensor import (
+        WeatherFlowTrilaterationStatusSensor,
+    )
+
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    sensor = WeatherFlowTrilaterationStatusSensor(coordinator, mock_entry)
+
+    # Initial state
+    assert sensor.state == "no_strikes"
+    assert sensor.extra_state_attributes["last_error"] is None
+    assert sensor.extra_state_attributes["reporting_stations"] == []
+
+    # Update coordinator status and check sensor reflects changes
+    coordinator.last_trilateration_status = "insufficient_stations"
+    coordinator.last_trilateration_error = "Only 2 stations reported this strike"
+    coordinator.last_trilateration_reporting = ["Primary (8.0 km)", "Neighbor 2 (1.0 km)"]
+
+    assert sensor.state == "insufficient_stations"
+    assert sensor.extra_state_attributes["last_error"] == "Only 2 stations reported this strike"
+    assert sensor.extra_state_attributes["reporting_stations"] == [
+        "Primary (8.0 km)",
+        "Neighbor 2 (1.0 km)",
+    ]

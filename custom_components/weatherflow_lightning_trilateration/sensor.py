@@ -25,6 +25,7 @@ async def async_setup_entry(
     entities = [
         WeatherFlowTrilaterationSensor(coordinator, entry),
         WeatherFlowStrikeRateSensor(coordinator, entry),
+        WeatherFlowTrilaterationStatusSensor(coordinator, entry),
     ]
 
     # Register a separate sensor for each configured station to monitor individual strike counts
@@ -195,4 +196,47 @@ class WeatherFlowStrikeRateSensor(SensorEntity):
     async def async_update(self) -> None:
         """Update the sensor."""
         # The coordinator updates its internal lists, this method triggers a state refresh
+        pass
+
+
+class WeatherFlowTrilaterationStatusSensor(SensorEntity):
+    """Sensor showing the status of the last trilateration calculation attempt."""
+
+    def __init__(self, coordinator, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self._coordinator = coordinator
+        self._entry = entry
+        self._attr_name = f"{coordinator.instance_name} Trilateration Status"
+        self._attr_unique_id = f"{entry.entry_id}_trilateration_status"
+        self._attr_icon = "mdi:lightning-bolt-outline"
+        _LOGGER.debug(
+            "Initialized WeatherFlowTrilaterationStatusSensor: name=%s, unique_id=%s",
+            self._attr_name,
+            self._attr_unique_id,
+        )
+
+    @property
+    def state(self) -> str:
+        """Return the state of the sensor (status of the last attempt)."""
+        return self._coordinator.last_trilateration_status
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return entity specific state attributes."""
+        return {
+            "last_attempt_timestamp": self._coordinator.last_trilateration_timestamp,
+            "last_error": self._coordinator.last_trilateration_error,
+            "reporting_stations": self._coordinator.last_trilateration_reporting,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Call when entity is added to hass."""
+        self._coordinator.async_add_listener(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Call when entity will be removed from HASS."""
+        self._coordinator.async_remove_listener(self.async_write_ha_state)
+
+    async def async_update(self) -> None:
+        """Update the sensor."""
         pass
