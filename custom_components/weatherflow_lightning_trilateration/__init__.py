@@ -340,11 +340,21 @@ class SharedWebSocketSession:
                 "device_id": int(device_id),
                 "id": f"sub_{device_id}",
             }
+            rapid_sub_msg = {
+                "type": "listen_rapid_start",
+                "device_id": int(device_id),
+                "id": f"sub_rapid_{device_id}",
+            }
             try:
                 await self._websocket.send(json.dumps(sub_msg))
                 _LOGGER.info("Subscribed to device: %s via shared WS", device_id)
             except Exception as e:
                 _LOGGER.error("Failed to send listen_start for %s: %s", device_id, e)
+            try:
+                await self._websocket.send(json.dumps(rapid_sub_msg))
+                _LOGGER.info("Subscribed to rapid wind for device: %s via shared WS", device_id)
+            except Exception as e:
+                _LOGGER.error("Failed to send listen_rapid_start for %s: %s", device_id, e)
 
     async def _send_listen_stop_for_coordinator(
         self, coordinator: "TempestStrikeCoordinator"
@@ -361,11 +371,21 @@ class SharedWebSocketSession:
                 "device_id": int(device_id),
                 "id": f"unsub_{device_id}",
             }
+            rapid_unsub_msg = {
+                "type": "listen_rapid_stop",
+                "device_id": int(device_id),
+                "id": f"unsub_rapid_{device_id}",
+            }
             try:
                 await self._websocket.send(json.dumps(sub_msg))
                 _LOGGER.info("Unsubscribed from device: %s via shared WS", device_id)
             except Exception as e:
                 _LOGGER.error("Failed to send listen_stop for %s: %s", device_id, e)
+            try:
+                await self._websocket.send(json.dumps(rapid_unsub_msg))
+                _LOGGER.info("Unsubscribed from rapid wind for device: %s via shared WS", device_id)
+            except Exception as e:
+                _LOGGER.error("Failed to send listen_rapid_stop for %s: %s", device_id, e)
 
     async def _async_listen_loop(self) -> None:
         """Handle the infinite WebSocket connection loop."""
@@ -1325,6 +1345,19 @@ class TempestStrikeCoordinator:
                 self.async_update_listeners()
             return
 
+        if msg_type == "rapid_wind":
+            ob = message_data.get("ob", [])
+            if ob and len(ob) >= 3:
+                self.wind_speed = float(ob[1])
+                self.wind_direction = float(ob[2])
+                _LOGGER.debug(
+                    "Parsed rapid wind telemetry: wind_speed=%f, wind_direction=%f",
+                    self.wind_speed,
+                    self.wind_direction,
+                )
+                self.async_update_listeners()
+            return
+
         if msg_type != "evt_strike":
             return
 
@@ -1475,7 +1508,9 @@ class TempestStrikeCoordinator:
             _LOGGER.warning("Collinear station arrangement or invalid distance data detected.")
             self.last_trilateration_status = "collinear"
             self.last_trilateration_timestamp = time.time()
-            self.last_trilateration_error = "Collinear station arrangement or invalid distance data detected."
+            self.last_trilateration_error = (
+                "Collinear station arrangement or invalid distance data detected."
+            )
             self.last_trilateration_reporting = station_info or []
             self.async_update_listeners()
             return
@@ -1539,7 +1574,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=2cbc601"
+    url = f"{base_url}?v=eb07272"
 
     existing_item = None
     if hasattr(resources, "async_items"):
