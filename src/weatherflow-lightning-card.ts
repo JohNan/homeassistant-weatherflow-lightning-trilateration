@@ -2166,8 +2166,10 @@ class WeatherFlowLightningCard extends HTMLElement {
     this._hass = hass;
     if (!hass || !this.initialized) return;
 
-    // Find the station sensor
+    // Find the station sensor (prefer configured entity, fallback to auto-detection)
     const stationsSensorId =
+      this.config.entity ||
+      this.config.entity_id ||
       Object.keys(hass.states).find(
         (key) =>
           key.startsWith('sensor.') &&
@@ -2716,7 +2718,10 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
     // Filter to only weatherflow trilateration station sensors
     picker.entityFilter = (entity: any) =>
       entity.attributes && Array.isArray(entity.attributes.stations) && entity.attributes.icon === 'mdi:lightning-bolt';
-    const current = this._config && this._config.entity_id ? this._config.entity_id : null;
+    const current =
+      this._config && (this._config.entity || this._config.entity_id)
+        ? this._config.entity || this._config.entity_id
+        : null;
     if (picker.value !== current) {
       picker.value = current;
     }
@@ -2730,6 +2735,7 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
     }
     const newConfig = {
       ...this._config,
+      entity: entityId || undefined,
       entity_id: entityId || undefined,
       entry_id: entry_id || undefined
     };
