@@ -73,8 +73,13 @@ class WeatherFlowLightningCard extends HTMLElement {
       min_brightness: 0.8,
       elevation_scale: 1.5,
       show_3d_features: false,
+      playback_speed: 120,
       ...config
     };
+    this.playbackSpeed = parseFloat(this.config.playback_speed) || 120;
+    if (this.speedSelect) {
+      this.speedSelect.value = this.playbackSpeed.toString();
+    }
     if (this.container) {
       const height = this.config.height;
       if (height.endsWith('px')) {
@@ -1777,6 +1782,31 @@ class WeatherFlowLightningCard extends HTMLElement {
       .play-btn:hover {
         transform: scale(1.2);
       }
+      .speed-select {
+        background: #0f172a;
+        color: #38bdf8;
+        border: 1px solid rgba(56, 189, 248, 0.3);
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-size: 11px;
+        font-weight: 500;
+        outline: none;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      .speed-select:hover {
+        border-color: #38bdf8;
+        background: #1e293b;
+        box-shadow: 0 0 6px rgba(56, 189, 248, 0.2);
+      }
+      .speed-select:focus {
+        border-color: #38bdf8;
+        box-shadow: 0 0 8px rgba(56, 189, 248, 0.4);
+      }
+      .speed-select option {
+        background: #080c14;
+        color: #e2e8f0;
+      }
     `;
     this.wrapper.appendChild(style);
 
@@ -1804,6 +1834,24 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.slider.value = '1000';
     this.controls.appendChild(this.slider);
 
+    this.speedSelect = document.createElement('select');
+    this.speedSelect.className = 'speed-select';
+    const speeds = [1, 5, 10, 30, 60, 120, 300, 600];
+    if (!speeds.includes(this.playbackSpeed)) {
+      speeds.push(this.playbackSpeed);
+      speeds.sort((a, b) => a - b);
+    }
+    speeds.forEach((s) => {
+      const opt = document.createElement('option');
+      opt.value = s.toString();
+      opt.innerText = `${s}x`;
+      if (s === this.playbackSpeed) {
+        opt.selected = true;
+      }
+      this.speedSelect.appendChild(opt);
+    });
+    this.controls.appendChild(this.speedSelect);
+
     this.timeLabel = document.createElement('span');
     this.timeLabel.style.fontSize = '12px';
     this.timeLabel.style.minWidth = '130px';
@@ -1816,6 +1864,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.playBtn.addEventListener('click', () => this.togglePlay());
     this.slider.addEventListener('input', (e) => this.handleSliderInput(e));
     this.slider.addEventListener('change', () => this.handleSliderChange());
+    this.speedSelect.addEventListener('change', (e) => {
+      this.playbackSpeed = parseFloat((e.target as HTMLSelectElement).value) || 120;
+    });
   }
 
   getPlayIcon() {
@@ -1827,23 +1878,18 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   tickPlayback() {
-    if (this.strikeHistory.length === 0) {
-      if (this.slider) this.slider.disabled = true;
-      if (this.timeLabel) this.timeLabel.innerText = 'No strikes';
-      return;
-    }
+    const minTime =
+      this.strikeHistory.length > 0 ? Math.min(Date.now() - 3600000, this.strikeHistory[0].time) : Date.now() - 3600000;
+    const maxTime = Date.now();
 
     if (this.slider) this.slider.disabled = false;
-
-    const minTime = this.strikeHistory[0].time;
-    const maxTime = Date.now();
 
     if (this.playbackMode === 'live') {
       this.playbackTime = maxTime;
       if (this.slider) {
-        this.slider.min = minTime;
-        this.slider.max = maxTime;
-        this.slider.value = maxTime;
+        this.slider.min = minTime.toString();
+        this.slider.max = maxTime.toString();
+        this.slider.value = maxTime.toString();
       }
       if (this.timeLabel) this.timeLabel.innerText = 'Live';
     } else {
@@ -1859,17 +1905,17 @@ class WeatherFlowLightningCard extends HTMLElement {
           this.setLiveMode();
         } else {
           if (this.slider) {
-            this.slider.min = minTime;
-            this.slider.max = maxTime;
-            this.slider.value = this.playbackTime;
+            this.slider.min = minTime.toString();
+            this.slider.max = maxTime.toString();
+            this.slider.value = this.playbackTime.toString();
           }
           this.updateTimeLabel();
           this.checkAndTriggerPlaybackStrikes();
         }
       } else {
         if (this.slider) {
-          this.slider.min = minTime;
-          this.slider.max = maxTime;
+          this.slider.min = minTime.toString();
+          this.slider.max = maxTime.toString();
         }
         this.updateTimeLabel();
       }
@@ -1877,23 +1923,26 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   togglePlay() {
+    const minTime =
+      this.strikeHistory.length > 0 ? Math.min(Date.now() - 3600000, this.strikeHistory[0].time) : Date.now() - 3600000;
     if (this.playbackMode === 'live') {
       this.playbackMode = 'playback';
       this.isPlaying = true;
       this.lastPlayTickTime = Date.now();
-      if (this.strikeHistory.length > 0) {
-        const thirtySecsAgo = Date.now() - 30000;
-        this.playbackTime = Math.max(this.strikeHistory[0].time, thirtySecsAgo);
-        this.strikeHistory.forEach((s) => {
-          s.animated = s.time <= this.playbackTime;
-        });
-      } else {
-        this.playbackTime = Date.now();
-      }
+      this.playbackTime = minTime;
+      this.strikeHistory.forEach((s) => {
+        s.animated = s.time <= this.playbackTime;
+      });
     } else {
       this.isPlaying = !this.isPlaying;
       if (this.isPlaying) {
         this.lastPlayTickTime = Date.now();
+        if (this.playbackTime >= Date.now()) {
+          this.playbackTime = minTime;
+          this.strikeHistory.forEach((s) => {
+            s.animated = s.time <= this.playbackTime;
+          });
+        }
       }
     }
     this.updatePlayBtnIcon();
@@ -1923,7 +1972,6 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   updateTimeLabel() {
-    if (this.strikeHistory.length === 0) return;
     const date = new Date(this.playbackTime);
     const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
@@ -2473,6 +2521,11 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       if (show3DFeaturesInput) {
         show3DFeaturesInput.checked = this._config.show_3d_features === true;
       }
+      const playbackSpeedInput = this.shadowRoot.getElementById('playback_speed') as HTMLInputElement;
+      if (playbackSpeedInput) {
+        playbackSpeedInput.value =
+          this._config.playback_speed !== undefined ? this._config.playback_speed.toString() : '120';
+      }
       this._syncEntityPicker();
     }
   }
@@ -2600,6 +2653,10 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
           <label for="zoom_level">Default Zoom Radius (10-150)</label>
           <input type="text" id="zoom_level" value="${this._config.zoom_level !== undefined ? this._config.zoom_level : '18.0'}">
         </div>
+        <div class="paper-input-container">
+          <label for="playback_speed">Default Playback Speed Multiplier</label>
+          <input type="text" id="playback_speed" value="${this._config.playback_speed !== undefined ? this._config.playback_speed : '120'}">
+        </div>
         <div class="config-row">
           <label for="auto_orbit">Enable Idle Camera Orbit</label>
           <label class="switch">
@@ -2701,7 +2758,12 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
     if (!this._config) return;
     const target = e.target;
     let value = target.value;
-    if (target.id === 'zoom_level' || target.id === 'min_brightness' || target.id === 'elevation_scale') {
+    if (
+      target.id === 'zoom_level' ||
+      target.id === 'min_brightness' ||
+      target.id === 'elevation_scale' ||
+      target.id === 'playback_speed'
+    ) {
       const parsed = parseFloat(value);
       if (!isNaN(parsed)) {
         value = parsed;
