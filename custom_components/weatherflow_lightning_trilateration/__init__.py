@@ -1395,18 +1395,31 @@ class TempestStrikeCoordinator:
         _LOGGER.debug("Processing WebSocket message of type: %s", msg_type)
 
         if msg_type == "obs_st":
+            # obs_st payload indices (WeatherFlow Tempest WS spec):
+            #  [0] epoch  [1] interval(min)  [2] wind_lull  [3] wind_avg
+            #  [4] wind_gust  [5] wind_direction  [6] wind_sample_interval
+            #  [7] pressure  [8] temperature  [9] humidity  [10] illuminance
+            #  [11] uv  [12] solar_radiation  [13] rain_accumulated(mm/interval)
+            #  [14] precip_type  [15] local_daily_rain  [16] precip_analysis
+            #  [17] battery  [18] report_interval
             obs = message_data.get("obs", [])
-            if obs and len(obs[0]) >= 18:
-                self.wind_speed = float(obs[0][2])
-                self.wind_direction = float(obs[0][4])
-                self.solar_radiation = float(obs[0][11])
-                self.rain_rate = float(obs[0][12])
+            if obs and len(obs[0]) >= 14:
+                interval_min = float(obs[0][1]) if obs[0][1] else 1.0
+                rain_accum_mm = float(obs[0][13])
+                self.wind_speed = float(obs[0][3])
+                self.wind_direction = float(obs[0][5])
+                self.solar_radiation = float(obs[0][12])
+                # Convert per-interval accumulation (mm) to mm/h
+                self.rain_rate = round(rain_accum_mm * (60.0 / interval_min), 2)
                 _LOGGER.debug(
-                    "Parsed weather telemetry: wind_speed=%f, wind_direction=%f, solar_radiation=%f, rain_rate=%f",
+                    "Parsed weather telemetry: wind_speed=%f, wind_direction=%f,"
+                    " solar_radiation=%f, rain_rate=%f (accum=%f mm over %f min)",
                     self.wind_speed,
                     self.wind_direction,
                     self.solar_radiation,
                     self.rain_rate,
+                    rain_accum_mm,
+                    interval_min,
                 )
                 self.async_update_listeners()
             return
