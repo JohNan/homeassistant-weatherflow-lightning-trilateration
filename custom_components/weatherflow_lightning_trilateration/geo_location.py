@@ -133,9 +133,7 @@ class WeatherFlowStrikeStorage:
     def _schedule_save(self) -> None:
         """Schedule serialization of active strikes."""
         current_time = time.time()
-        self.strikes = [
-            s for s in self.strikes if current_time - s["time"] < STRIKE_MARKER_TTL_SEC
-        ]
+        self.strikes = [s for s in self.strikes if current_time - s["time"] < STRIKE_MARKER_TTL_SEC]
         self.hass.async_create_task(self.async_save())
 
 

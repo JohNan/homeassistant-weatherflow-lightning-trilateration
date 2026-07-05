@@ -33,7 +33,6 @@ from .const import (
     RAW_STRIKE_RETENTION_SEC,
     STORAGE_KEY_RAW_STRIKES,
     STORAGE_VERSION,
-    STRIKE_MARKER_TTL_SEC,
     WS_ENDPOINT,
 )
 
@@ -193,9 +192,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for coordinator in coordinators:
             source = events if events is not None else coordinator.raw_strikes
             summary = coordinator.replay_strikes(source, tolerance)
-            _LOGGER.info(
-                "Replayed strikes for %s: %s", coordinator.instance_name, summary
-            )
+            _LOGGER.info("Replayed strikes for %s: %s", coordinator.instance_name, summary)
 
     if not hass.services.has_service(DOMAIN, "simulate_strike"):
         hass.services.async_register(
@@ -1643,7 +1640,9 @@ class TempestStrikeCoordinator:
                 "Calculated strike location coords out of bounds: lat=%f, lon=%f", lat, lon
             )
             self.last_trilateration_status = "out_of_bounds"
-            self.last_trilateration_error = f"Calculated strike location coords out of bounds: lat={lat}, lon={lon}."
+            self.last_trilateration_error = (
+                f"Calculated strike location coords out of bounds: lat={lat}, lon={lon}."
+            )
             self.async_update_listeners()
             return
 
