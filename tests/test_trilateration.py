@@ -18,6 +18,17 @@ mock_http.StaticPathConfig = StaticPathConfig
 mock_core = MagicMock()
 mock_core.HomeAssistant = MagicMock
 
+
+def mock_callback(func):
+    return func
+
+
+callback = mock_callback
+
+
+mock_core.callback = mock_callback
+sys.modules["homeassistant.core"] = mock_core
+
 mock_helpers = MagicMock()
 mock_helpers.config_validation = MagicMock()
 mock_helpers.device_registry = MagicMock()
@@ -193,11 +204,11 @@ def test_station_strikes_tracking(mock_hass, mock_entry):
     coordinator.device_to_station = {"309874": "125048"}
 
     # Mock listener callback
-    listener_called = False
+    listener_calls = []
 
+    @callback
     def mock_listener():
-        nonlocal listener_called
-        listener_called = True
+        listener_calls.append(True)
 
     coordinator.async_add_listener(mock_listener)
 
@@ -212,7 +223,7 @@ def test_station_strikes_tracking(mock_hass, mock_entry):
         "timestamp": 1782640276,
         "distance": 17.0,
     }
-    assert listener_called is True
+    assert len(listener_calls) > 0
 
 
 def test_osm_vector_cache_invalidation(mock_hass, mock_entry):

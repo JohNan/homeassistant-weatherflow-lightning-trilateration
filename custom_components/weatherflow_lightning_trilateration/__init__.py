@@ -13,7 +13,7 @@ import voluptuous as vol
 import websockets
 from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -510,6 +510,7 @@ class TempestStrikeCoordinator:
         if update_callback in self._listeners:
             self._listeners.remove(update_callback)
 
+    @callback
     def async_update_listeners(self) -> None:
         """Trigger update callbacks for all listeners."""
         for update_callback in self._listeners:
@@ -1401,6 +1402,7 @@ class TempestStrikeCoordinator:
             self.recent_strike_timestamps.append(timestamp)
             _LOGGER.info("Created new strike buffer bucket for timestamp %d", matched_timestamp)
 
+            @callback
             def _process_bucket(_: object) -> None:
                 """Process a bucket of strike events after a short delay."""
                 # The timer executed, remove it from the tracking dict
