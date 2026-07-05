@@ -88,6 +88,45 @@ simulate_weather:
       selector:
         text:
 
+replay_strikes:
+  name: Replay / Backfill Strikes
+  description: >-
+    Re-run trilateration over raw per-station strike observations and emit map
+    markers for reliable fixes, using each strike's original timestamp. If no
+    events are supplied, the strikes persisted by the integration are replayed.
+  fields:
+    events:
+      name: Events
+      description: >-
+        Optional list of raw strike observations to replay. Each item needs a
+        timestamp (epoch seconds) and distance (km), plus a station_id or
+        device_id. If omitted, the integration's own stored raw strikes are used.
+      required: false
+      example: >-
+        [{"device_id": "408432", "timestamp": 1783257210, "distance": 1},
+         {"device_id": "102900", "timestamp": 1783257209, "distance": 12},
+         {"device_id": "214729", "timestamp": 1783257208, "distance": 10}]
+      selector:
+        object:
+    variance_tolerance:
+      name: Variance Tolerance (seconds)
+      description: Max timestamp spread (seconds) for grouping strikes from different stations into one event.
+      required: false
+      example: 3
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 1
+          mode: box
+    entry_id:
+      name: Entry ID
+      description: Target a specific integration instance by Entry ID.
+      required: false
+      example: f2a1c9b3
+      selector:
+        text:
+
 simulate_storm:
   name: Simulate Moving Storm
   description: Simulate a moving storm path that generates periodic lightning strikes along a linear trajectory over time.

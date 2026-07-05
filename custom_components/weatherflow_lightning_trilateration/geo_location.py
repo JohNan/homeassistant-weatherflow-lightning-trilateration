@@ -10,7 +10,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
 from . import event_key
-from .const import CONF_NAME
+from .const import CONF_NAME, STRIKE_MARKER_TTL_SEC
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,13 +39,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     for strike in storage.strikes:
         age = current_time - strike["time"]
-        if age < 21600:
+        if age < STRIKE_MARKER_TTL_SEC:
             valid_strikes.append(strike)
             entity = WeatherFlowLightningStrikeEntity(
                 strike["latitude"],
                 strike["longitude"],
                 strike["time"],
-                21600 - age,
+                STRIKE_MARKER_TTL_SEC - age,
                 storage,
                 instance_name,
             )
@@ -62,14 +62,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         """Handle calculated strike events."""
         latitude = event.data.get("latitude")
         longitude = event.data.get("longitude")
-        if latitude is not None and longitude is not None:
+        if latitude is None or longitude is None:
+            return
+
+        # Live strikes carry no timestamp (default to now); backfilled/replayed
+        # strikes carry their original epoch so retention and expiry are correct.
+        timestamp = event.data.get("timestamp")
+        if timestamp is None:
             timestamp = time.time()
-            storage.add_strike(latitude, longitude, timestamp)
-            entity = WeatherFlowLightningStrikeEntity(
-                latitude, longitude, timestamp, 21600, storage, instance_name
-            )
-            for add_callback in _ADD_ENTITIES_CALLBACKS:
-                add_callback([entity])
+
+        remaining = STRIKE_MARKER_TTL_SEC - (time.time() - timestamp)
+        if remaining <= 0:
+            # Strike is already older than the retention window; nothing to show.
+            return
+
+        if storage.has_strike(latitude, longitude, timestamp):
+            # Avoid duplicate markers when a replay overlaps existing strikes.
+            return
+
+        storage.add_strike(latitude, longitude, timestamp)
+        entity = WeatherFlowLightningStrikeEntity(
+            latitude, longitude, timestamp, remaining, storage, instance_name
+        )
+        for add_callback in _ADD_ENTITIES_CALLBACKS:
+            add_callback([entity])
 
     remove_listener = hass.bus.async_listen(event_key(entry.entry_id), _handle_strike_event)
     entry.async_on_unload(remove_listener)
@@ -95,6 +111,15 @@ class WeatherFlowStrikeStorage:
         """Save strikes to store."""
         await self.store.async_save({"strikes": self.strikes})
 
+    def has_strike(self, latitude: float, longitude: float, timestamp: float) -> bool:
+        """Return True if a matching strike is already stored (replay dedup)."""
+        return any(
+            int(s["time"]) == int(timestamp)
+            and abs(s["latitude"] - latitude) < 1e-4
+            and abs(s["longitude"] - longitude) < 1e-4
+            for s in self.strikes
+        )
+
     def add_strike(self, latitude: float, longitude: float, timestamp: float) -> None:
         """Add a strike and schedule save."""
         self.strikes.append({"latitude": latitude, "longitude": longitude, "time": timestamp})
@@ -108,7 +133,9 @@ class WeatherFlowStrikeStorage:
     def _schedule_save(self) -> None:
         """Schedule serialization of active strikes."""
         current_time = time.time()
-        self.strikes = [s for s in self.strikes if current_time - s["time"] < 21600]
+        self.strikes = [
+            s for s in self.strikes if current_time - s["time"] < STRIKE_MARKER_TTL_SEC
+        ]
         self.hass.async_create_task(self.async_save())
 
 

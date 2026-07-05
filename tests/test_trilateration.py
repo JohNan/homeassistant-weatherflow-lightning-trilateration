@@ -24,6 +24,7 @@ mock_helpers.device_registry = MagicMock()
 mock_helpers.aiohttp_client = MagicMock()
 mock_helpers.event = MagicMock()
 mock_helpers.entity_platform = MagicMock()
+mock_helpers.storage = MagicMock()
 
 
 class MockSensorEntity:
@@ -65,6 +66,7 @@ mock_homeassistant.helpers.device_registry = mock_helpers.device_registry
 mock_homeassistant.helpers.aiohttp_client = mock_helpers.aiohttp_client
 mock_homeassistant.helpers.event = mock_helpers.event
 mock_homeassistant.helpers.entity_platform = mock_helpers.entity_platform
+mock_homeassistant.helpers.storage = mock_helpers.storage
 
 sys.modules["homeassistant"] = mock_homeassistant
 sys.modules["homeassistant.components"] = mock_homeassistant.components
@@ -78,6 +80,7 @@ sys.modules["homeassistant.helpers.device_registry"] = mock_helpers.device_regis
 sys.modules["homeassistant.helpers.aiohttp_client"] = mock_helpers.aiohttp_client
 sys.modules["homeassistant.helpers.event"] = mock_helpers.event
 sys.modules["homeassistant.helpers.entity_platform"] = mock_helpers.entity_platform
+sys.modules["homeassistant.helpers.storage"] = mock_helpers.storage
 
 from custom_components.weatherflow_lightning_trilateration import TempestStrikeCoordinator
 from custom_components.weatherflow_lightning_trilateration.const import EVENT_STRIKE_CALCULATED
@@ -312,6 +315,63 @@ def test_mlat_calculation_n4(mock_hass, mock_entry):
     payload = mock_hass.bus.async_fire.call_args[0][1]
     assert pytest.approx(payload["latitude"], abs=1e-3) == target_lat
     assert pytest.approx(payload["longitude"], abs=1e-3) == target_lon
+
+
+def test_trilateration_rejects_inconsistent_distances(mock_hass, mock_entry):
+    """Mutually inconsistent distances must be discarded, not reported as success."""
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+
+    # Real captured data that previously produced a bogus "success" at ~82N:
+    # stations ~2 km apart reporting 1 km vs 10 km cannot be reconciled.
+    strike_events = [
+        (59.81914, 17.71636, 12.0),
+        (59.847, 17.61482, 1.0),
+        (59.85486, 17.58534, 10.0),
+    ]
+
+    coordinator._calculate_trilateration(strike_events)
+
+    assert coordinator.last_trilateration_status == "unreliable"
+    mock_hass.bus.async_fire.assert_not_called()
+
+
+def test_replay_strikes_backfills_markers(mock_hass, mock_entry):
+    """Replaying raw observations re-runs trilateration and fires markers."""
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+
+    coordinator.device_to_station = {"a": "S1", "b": "S2", "c": "S3"}
+    coordinator.station_coords = {
+        "S1": (40.0, -75.0),
+        "S2": (40.15, -74.85),
+        "S3": (40.15, -75.15),
+    }
+
+    target_lat, target_lon = 40.1, -74.9
+    R = 6371.0
+
+    def compute_dist(s_lat, s_lon):
+        cos_lat = math.cos(math.radians(s_lat))
+        return R * math.sqrt(
+            (math.radians(target_lon - s_lon) * cos_lat) ** 2
+            + (math.radians(target_lat - s_lat)) ** 2
+        )
+
+    ts = 1783257210
+    events = [
+        {"device_id": "a", "timestamp": ts, "distance": compute_dist(40.0, -75.0)},
+        {"device_id": "b", "timestamp": ts + 1, "distance": compute_dist(40.15, -74.85)},
+        {"device_id": "c", "timestamp": ts + 2, "distance": compute_dist(40.15, -75.15)},
+    ]
+
+    summary = coordinator.replay_strikes(events, tolerance=3)
+
+    assert summary == {"buckets": 1, "fired": 1, "skipped": 0}
+    mock_hass.bus.async_fire.assert_called_once()
+    payload = mock_hass.bus.async_fire.call_args[0][1]
+    assert pytest.approx(payload["latitude"], abs=1e-3) == target_lat
+    assert pytest.approx(payload["longitude"], abs=1e-3) == target_lon
+    # Marker carries the strike's original timestamp (the bucket key).
+    assert payload["timestamp"] == float(ts)
 
 
 def test_strike_rate_sensor_tracking(mock_hass, mock_entry):
