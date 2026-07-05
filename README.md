@@ -18,6 +18,7 @@ A native Home Assistant custom integration that connects to the WeatherFlow Temp
 - **Strike Rate Sensor:** Automatically exposes a rolling `strikes/min` sensor entity (`sensor.weatherflow_strike_rate`) calculated dynamically using a 60-second sliding window.
 - **Map Visualizations:** Places temporary geolocation markers representing strikes on the map, which automatically disappear after 6 hours.
 - **Simulation/Testing Service:** Exposes a custom service to trigger simulated strikes anywhere, allowing end-to-end testing of map markers and dashboard animations.
+- **Strike Persistence & Replay:** Persists raw per-station strike observations for 7 days and exposes a `replay_strikes` service to re-run trilateration and backfill missed strikes.
 - **3D WebGL Dashboard Card:** Includes an advanced 3D visualizer Lovelace card showcasing:
   - *Real-world 3D Terrain:* Queries Open-Meteo elevation data centered at the primary station coordinates and generates a displaced 3D terrain surface.
   - *Draped Reference Rings:* Places 10km, 20km, and 30km concentric range rings and crosshair compass lines that drape over the terrain bumps.
@@ -49,7 +50,7 @@ custom_components/weatherflow_lightning_trilateration/
 │   └── weatherflow-lightning-card.js   # 3D WebGL Lovelace Custom Card
 ├── geo_location.py      # GeolocationEvent entities for map plotting
 ├── manifest.json        # Integration manifest metadata
-├── services.yaml        # Configuration fields for simulate_strike service
+├── services.yaml        # Field definitions for simulate_* and replay_strikes services
 └── translations/
     └── en.json          # English translation strings for Setup UI
 hacs.json                # HACS configuration properties
@@ -115,6 +116,34 @@ To visually test the entire mapping and 3D animation stack without waiting for a
 
 ---
 
+## Backfilling & Replaying Strikes
+
+Every raw per-station strike observation (`device_id`, `station_id`, `timestamp`, `distance`) is persisted to disk for **7 days**, so trilateration can be re-run later — for example after a fix or a configuration change, or to recover strikes that were missed while the integration was misbehaving.
+
+Use the `weatherflow_lightning_trilateration.replay_strikes` service (**Developer Tools > Actions**):
+
+- **No arguments** — replays the strikes the integration has stored, re-running trilateration over them.
+- **`events`** — an explicit list of raw observations to replay, e.g. reconstructed from Home Assistant logs:
+  ```yaml
+  action: weatherflow_lightning_trilateration.replay_strikes
+  data:
+    events:
+      - { device_id: "408432", timestamp: 1783257210, distance: 1 }
+      - { device_id: "102900", timestamp: 1783257209, distance: 12 }
+      - { device_id: "214729", timestamp: 1783257208, distance: 10 }
+  ```
+- **`variance_tolerance`** — max timestamp spread (seconds, default `3`) for grouping strikes from different stations into a single event.
+- **`entry_id`** — target a specific integration instance.
+
+Replayed strikes are plotted using their **original timestamps** (so map-marker expiry stays correct, and strikes older than 6 hours are skipped), and duplicate markers are suppressed so the service can be run repeatedly without piling up.
+
+### Reliability & the `unreliable` status
+A strike location is only accepted when the computed position actually agrees with the reported distances. After solving, the great-circle distance from the result back to each reporting station is compared against that station's reported distance; if the worst mismatch exceeds `MAX_TRILATERATION_RESIDUAL_KM` (5 km, in `const.py`), the fix is **discarded** and the Trilateration Status sensor reports `unreliable` instead of `success`. This prevents mutually inconsistent readings (coarse/noisy distances, or stations that are too close together) from placing bogus markers on the map.
+
+> **Tip:** Reliable fixes require at least **3 well-separated stations** reporting mutually consistent distances for the same strike. Stations clustered within a few kilometres of each other, or strikes seen by fewer than 3 stations, will not produce a marker.
+
+---
+
 ## Troubleshooting & FAQs
 
 ### The Integration Icon/Logo is Not Loading
@@ -136,4 +165,5 @@ The $N$-station trilateration algorithm projects spherical geodetic coordinates 
 3. Solves the overdetermined linear system of equations (when $N \ge 3$) using a Least-Squares optimization method:
    $$\mathbf{x} = (\mathbf{A}^T\mathbf{A})^{-1}\mathbf{A}^T\mathbf{b}$$
 4. Transforms the resulting local Cartesian coordinates $(x, y)$ back to spherical geodetic latitude and longitude coordinates.
-5. Fires the `weatherflow_strike_calculated` event and updates the Home Assistant map and custom 3D WebGL dashboard card.
+5. **Validates the fit** by measuring the residual between the reported distances $d_i$ and the great-circle distance from the solved location back to each station $S_i$; solutions whose worst residual exceeds `MAX_TRILATERATION_RESIDUAL_KM` are rejected as `unreliable`.
+6. Fires the `weatherflow_strike_calculated` event and updates the Home Assistant map and custom 3D WebGL dashboard card.

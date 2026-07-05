@@ -13,11 +13,12 @@ import voluptuous as vol
 import websockets
 from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.storage import Store
 from websockets.connection import State as WsState
 
 from .const import (
@@ -28,6 +29,10 @@ from .const import (
     CONF_PRIMARY_STATION,
     DOMAIN,
     EVENT_STRIKE_CALCULATED,
+    MAX_TRILATERATION_RESIDUAL_KM,
+    RAW_STRIKE_RETENTION_SEC,
+    STORAGE_KEY_RAW_STRIKES,
+    STORAGE_VERSION,
     WS_ENDPOINT,
 )
 
@@ -165,6 +170,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             run_storm(), "weatherflow_lightning_trilateration_storm_simulation"
         )
 
+    # Register service to backfill/replay strikes through trilateration
+    async def async_replay_strikes(service_call) -> None:
+        """Re-run trilateration over stored or supplied raw strike observations."""
+        entry_id = service_call.data.get("entry_id")
+        events = service_call.data.get("events")
+        tolerance = int(service_call.data.get("variance_tolerance", 3))
+
+        coordinators = []
+        if entry_id:
+            coord = hass.data[DOMAIN].get(entry_id)
+            if isinstance(coord, TempestStrikeCoordinator):
+                coordinators.append(coord)
+        else:
+            for key, val in hass.data[DOMAIN].items():
+                if key not in ("_infra_registered", "_shared_ws") and isinstance(
+                    val, TempestStrikeCoordinator
+                ):
+                    coordinators.append(val)
+
+        for coordinator in coordinators:
+            source = events if events is not None else coordinator.raw_strikes
+            summary = coordinator.replay_strikes(source, tolerance)
+            _LOGGER.info("Replayed strikes for %s: %s", coordinator.instance_name, summary)
+
     if not hass.services.has_service(DOMAIN, "simulate_strike"):
         hass.services.async_register(
             DOMAIN,
@@ -206,6 +235,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     vol.Optional("speed_kmh"): vol.Coerce(float),
                     vol.Optional("direction_deg"): vol.Coerce(float),
                     vol.Optional("interval_sec"): vol.Coerce(int),
+                    vol.Optional("entry_id"): str,
+                }
+            ),
+        )
+
+    if not hass.services.has_service(DOMAIN, "replay_strikes"):
+        hass.services.async_register(
+            DOMAIN,
+            "replay_strikes",
+            async_replay_strikes,
+            schema=vol.Schema(
+                {
+                    vol.Optional("events"): [
+                        vol.Schema(
+                            {
+                                vol.Required("timestamp"): vol.Coerce(int),
+                                vol.Required("distance"): vol.Coerce(float),
+                                vol.Optional("station_id"): str,
+                                vol.Optional("device_id"): vol.Coerce(str),
+                            }
+                        )
+                    ],
+                    vol.Optional("variance_tolerance"): vol.Coerce(int),
                     vol.Optional("entry_id"): str,
                 }
             ),
@@ -465,6 +517,11 @@ class TempestStrikeCoordinator:
         self.station_last_strike = {}
         self.station_names = {}
         self.recent_strike_timestamps = []
+        # Raw per-station strike observations retained for later backfill/replay.
+        self.raw_strikes = []
+        self._raw_strike_store = Store(
+            hass, STORAGE_VERSION, f"{STORAGE_KEY_RAW_STRIKES}_{entry.entry_id}"
+        )
         self._listeners = []
         self.last_trilateration_status = "no_strikes"
         self.last_trilateration_timestamp = None
@@ -1225,6 +1282,15 @@ class TempestStrikeCoordinator:
 
     async def _async_setup_and_register(self) -> None:
         """Setup metadata and register with shared websocket session."""
+        # Restore persisted raw strike observations for backfill/replay
+        try:
+            stored = await self._raw_strike_store.async_load()
+            if stored:
+                self.raw_strikes = stored.get("strikes", [])
+                self._prune_raw_strikes()
+        except Exception as e:
+            _LOGGER.debug("Could not load stored raw strikes: %s", e)
+
         # Detect local weather stations from official and other WeatherFlow integrations
         local_stations = self._detect_local_stations()
         _LOGGER.info("Detected local weather stations: %s", local_stations)
@@ -1386,6 +1452,8 @@ class TempestStrikeCoordinator:
             "timestamp": timestamp,
             "distance": distance,
         }
+        # Persist the raw observation so a backfill/replay can be run later
+        self._record_raw_strike(device_id, station_id, timestamp, distance)
         self.async_update_listeners()
 
         # Find or create a group bucket matching timestamp within a 3-second variance tolerance
@@ -1401,6 +1469,7 @@ class TempestStrikeCoordinator:
             self.recent_strike_timestamps.append(timestamp)
             _LOGGER.info("Created new strike buffer bucket for timestamp %d", matched_timestamp)
 
+            @callback
             def _process_bucket(_: object) -> None:
                 """Process a bucket of strike events after a short delay."""
                 # The timer executed, remove it from the tracking dict
@@ -1433,7 +1502,9 @@ class TempestStrikeCoordinator:
                     _LOGGER.info(
                         "Invoking MLAT calculation with coordinates/distances: %s", strike_events
                     )
-                    self._calculate_trilateration(strike_events, station_info)
+                    self._calculate_trilateration(
+                        strike_events, station_info, timestamp=float(matched_timestamp)
+                    )
                 else:
                     _LOGGER.info(
                         "Trilateration could not be calculated: only %d stations reported this strike "
@@ -1467,10 +1538,17 @@ class TempestStrikeCoordinator:
                     timer = self._strike_timers.pop(bucket_ts)
                     timer()  # Cancel timer
 
-    def _calculate_trilateration(self, strike_events: list, station_info: list = None) -> None:
-        """Calculate the geographic intersection of multiple distances using least-squares."""
+    def _solve_trilateration(self, strike_events: list):
+        """Least-squares strike location from station coordinates and distances.
+
+        Returns a tuple ``(latitude, longitude, status, max_residual_km)`` where
+        ``status`` is one of ``"success"``, ``"collinear"``, ``"out_of_bounds"``,
+        ``"unreliable"`` or ``"insufficient_stations"``. ``latitude``/``longitude``
+        are ``None`` when no location could be computed. This method is pure: it
+        has no side effects, so it can be reused by both the live path and replay.
+        """
         if len(strike_events) < 3:
-            return
+            return None, None, "insufficient_stations", None
 
         # Earth radius in kilometers
         R = 6371.0
@@ -1505,58 +1583,191 @@ class TempestStrikeCoordinator:
 
         det = M11 * M22 - M12 * M12
         if abs(det) < 1e-9:
-            _LOGGER.warning("Collinear station arrangement or invalid distance data detected.")
-            self.last_trilateration_status = "collinear"
-            self.last_trilateration_timestamp = time.time()
-            self.last_trilateration_error = (
-                "Collinear station arrangement or invalid distance data detected."
-            )
-            self.last_trilateration_reporting = station_info or []
-            self.async_update_listeners()
-            return
+            return None, None, "collinear", None
 
         # x = (A^T A)^-1 A^T b
         x = (M22 * V1 - M12 * V2) / det
         y = (-M12 * V1 + M11 * V2) / det
 
-        delta_lat = y / R
-        delta_lon = x / (R * cos_lat1)
-
-        calculated_latitude = lat1 + math.degrees(delta_lat)
-        calculated_longitude = lon1 + math.degrees(delta_lon)
+        calculated_latitude = lat1 + math.degrees(y / R)
+        calculated_longitude = lon1 + math.degrees(x / (R * cos_lat1))
 
         if not (-90.0 <= calculated_latitude <= 90.0 and -180.0 <= calculated_longitude <= 180.0):
+            return calculated_latitude, calculated_longitude, "out_of_bounds", None
+
+        # Validate the fit: the great-circle distance from the computed location
+        # back to each reporting station must match that station's reported
+        # distance. A large residual means the readings are mutually inconsistent
+        # (coarse/noisy data or fabricated station coordinates) and the exact
+        # 3-station solve has diverged to a meaningless point.
+        max_residual = 0.0
+        for lat_s, lon_s, d_s in strike_events:
+            actual = self._calculate_distance(
+                calculated_latitude, calculated_longitude, lat_s, lon_s
+            )
+            max_residual = max(max_residual, abs(actual - d_s))
+
+        if max_residual > MAX_TRILATERATION_RESIDUAL_KM:
+            return calculated_latitude, calculated_longitude, "unreliable", max_residual
+
+        return calculated_latitude, calculated_longitude, "success", max_residual
+
+    def _calculate_trilateration(
+        self, strike_events: list, station_info: list = None, timestamp: float = None
+    ) -> None:
+        """Solve for the strike location and report/emit the result."""
+        lat, lon, status, residual = self._solve_trilateration(strike_events)
+
+        self.last_trilateration_timestamp = (
+            float(timestamp) if timestamp is not None else time.time()
+        )
+        self.last_trilateration_reporting = station_info or []
+
+        if status == "insufficient_stations":
+            return
+
+        if status == "collinear":
+            _LOGGER.warning("Collinear station arrangement or invalid distance data detected.")
+            self.last_trilateration_status = "collinear"
+            self.last_trilateration_error = (
+                "Collinear station arrangement or invalid distance data detected."
+            )
+            self.async_update_listeners()
+            return
+
+        if status == "out_of_bounds":
             _LOGGER.warning(
-                "Calculated strike location coords out of bounds: lat=%f, lon=%f",
-                calculated_latitude,
-                calculated_longitude,
+                "Calculated strike location coords out of bounds: lat=%f, lon=%f", lat, lon
             )
             self.last_trilateration_status = "out_of_bounds"
-            self.last_trilateration_timestamp = time.time()
-            self.last_trilateration_error = f"Calculated strike location coords out of bounds: lat={calculated_latitude}, lon={calculated_longitude}."
-            self.last_trilateration_reporting = station_info or []
+            self.last_trilateration_error = (
+                f"Calculated strike location coords out of bounds: lat={lat}, lon={lon}."
+            )
+            self.async_update_listeners()
+            return
+
+        if status == "unreliable":
+            _LOGGER.info(
+                "Discarding unreliable trilateration (lat=%f, lon=%f): max distance residual "
+                "%.1f km exceeds the %.1f km threshold; reported distances are inconsistent.",
+                lat,
+                lon,
+                residual,
+                MAX_TRILATERATION_RESIDUAL_KM,
+            )
+            self.last_trilateration_status = "unreliable"
+            self.last_trilateration_error = (
+                f"Reported distances are inconsistent (max residual {residual:.1f} km); "
+                "strike location discarded."
+            )
             self.async_update_listeners()
             return
 
         _LOGGER.info(
-            "Calculated strike location: lat=%f, lon=%f",
-            calculated_latitude,
-            calculated_longitude,
+            "Calculated strike location: lat=%f, lon=%f (max residual %.2f km)",
+            lat,
+            lon,
+            residual,
         )
-
         self.last_trilateration_status = "success"
-        self.last_trilateration_timestamp = time.time()
         self.last_trilateration_error = None
-        self.last_trilateration_reporting = station_info or []
         self.async_update_listeners()
 
+        self._fire_strike(lat, lon, self.last_trilateration_timestamp)
+
+    def _fire_strike(self, latitude: float, longitude: float, timestamp: float) -> None:
+        """Fire the strike-calculated event that creates a map marker."""
         self.hass.bus.async_fire(
             event_key(self.entry.entry_id),
             {
-                "latitude": calculated_latitude,
-                "longitude": calculated_longitude,
+                "latitude": latitude,
+                "longitude": longitude,
+                "timestamp": timestamp,
             },
         )
+
+    def _prune_raw_strikes(self) -> None:
+        """Drop raw strike observations older than the retention window."""
+        cutoff = time.time() - RAW_STRIKE_RETENTION_SEC
+        self.raw_strikes = [s for s in self.raw_strikes if s.get("timestamp", 0) >= cutoff]
+
+    @callback
+    def _record_raw_strike(
+        self, device_id: str, station_id: str, timestamp: int, distance: float
+    ) -> None:
+        """Persist a raw per-station strike observation for later backfill/replay."""
+        self.raw_strikes.append(
+            {
+                "device_id": device_id,
+                "station_id": station_id,
+                "timestamp": timestamp,
+                "distance": distance,
+            }
+        )
+        self._prune_raw_strikes()
+        # Coalesced, loop-safe write to disk.
+        self._raw_strike_store.async_delay_save(lambda: {"strikes": self.raw_strikes}, 30)
+
+    def replay_strikes(self, raw_events: list, tolerance: int = 3) -> dict:
+        """Re-run trilateration over raw strike observations and emit markers.
+
+        ``raw_events`` is an iterable of dicts with ``timestamp`` and ``distance``
+        plus either ``station_id`` or ``device_id``. Events are grouped by
+        timestamp (within ``tolerance`` seconds), and every group that produces a
+        reliable fix fires a strike marker using the strike's original timestamp.
+        Returns a summary dict.
+        """
+        buckets = {}
+        for ev in sorted(raw_events, key=lambda e: e.get("timestamp", 0)):
+            try:
+                ts = int(ev["timestamp"])
+                distance = float(ev["distance"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            station_id = ev.get("station_id")
+            if not station_id:
+                device_id = str(ev.get("device_id", ""))
+                station_id = self.device_to_station.get(device_id, device_id)
+
+            matched = None
+            for b_ts in buckets:
+                if abs(b_ts - ts) <= tolerance:
+                    matched = b_ts
+                    break
+            if matched is None:
+                matched = ts
+                buckets[matched] = {}
+            buckets[matched][station_id] = distance
+
+        summary = {"buckets": len(buckets), "fired": 0, "skipped": 0}
+        for matched_ts, bucket in sorted(buckets.items()):
+            strike_events = []
+            for station_id, dist in bucket.items():
+                coords = self._get_station_coords(station_id)
+                if coords:
+                    strike_events.append((coords[0], coords[1], dist))
+
+            lat, lon, status, residual = self._solve_trilateration(strike_events)
+            if status == "success":
+                self._fire_strike(lat, lon, float(matched_ts))
+                summary["fired"] += 1
+            else:
+                summary["skipped"] += 1
+                _LOGGER.debug(
+                    "Replay bucket %d skipped (%s, %d stations)",
+                    matched_ts,
+                    status,
+                    len(strike_events),
+                )
+
+        _LOGGER.info(
+            "Strike replay for %s: %d bucket(s), %d marker(s) emitted, %d skipped",
+            self.instance_name,
+            summary["buckets"],
+            summary["fired"],
+            summary["skipped"],
+        )
+        return summary
 
 
 async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
