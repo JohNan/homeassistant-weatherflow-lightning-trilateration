@@ -367,6 +367,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
     this.renderer.setClearColor(0x02040a, 1);
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
+    // [3] ACES filmic tone mapping — prevents blown-out glow/lightning whites
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
     this.container.appendChild(this.renderer.domElement);
 
     // Tooltip DOM element creation
@@ -1286,9 +1289,32 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   addStaticElements() {
-    // Ambient light
-    this.ambientLight = new THREE.AmbientLight(0x0f172a, 1.5);
+    // [4] Hemisphere light — sky colour above, ground colour below.
+    // Much more natural than a flat ambient: terrain slopes facing up
+    // get a cool blue-white tint, slopes facing down stay dark.
+    this.ambientLight = new THREE.HemisphereLight(
+      0x334155, // sky colour (night default — updated by day/night engine)
+      0x0a1120, // ground colour
+      1.5
+    );
     this.scene.add(this.ambientLight);
+
+    // [13] Procedural sky dome — large inverted sphere with a canvas-baked
+    // horizon-to-zenith gradient that the day/night engine repaints each tick.
+    this._skyCanvas = document.createElement('canvas');
+    this._skyCanvas.width = 2;
+    this._skyCanvas.height = 128;
+    this._skyTexture = new THREE.CanvasTexture(this._skyCanvas);
+    const skyGeo = new THREE.SphereGeometry(450, 16, 8);
+    const skyMat = new THREE.MeshBasicMaterial({
+      map: this._skyTexture,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false
+    });
+    this._skyDome = new THREE.Mesh(skyGeo, skyMat);
+    this.scene.add(this._skyDome);
+    this._paintSkyGradient(0); // paint night sky immediately
 
     this.dirLight = new THREE.DirectionalLight(0x38bdf8, 1);
     this.dirLight.position.set(5, 10, 7);
@@ -1398,13 +1424,16 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   initWeatherSystem() {
-    // Rain Particles
+    // [8] Rain particles — all spawned at cloud layer (y = 18–22) so they
+    // visually fall from above rather than popping into existence mid-air.
+    const CLOUD_BASE = 18;
+    const CLOUD_SPREAD = 4;
     const rainCount = 800;
     const rainGeo = new THREE.BufferGeometry();
     const rainPositions = new Float32Array(rainCount * 3);
     for (let i = 0; i < rainCount * 3; i += 3) {
       rainPositions[i] = (Math.random() - 0.5) * 40;
-      rainPositions[i + 1] = Math.random() * 20;
+      rainPositions[i + 1] = CLOUD_BASE + Math.random() * CLOUD_SPREAD;
       rainPositions[i + 2] = (Math.random() - 0.5) * 40;
     }
     rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
@@ -1417,6 +1446,8 @@ class WeatherFlowLightningCard extends HTMLElement {
       depthWrite: false
     });
     this.rainParticles = new THREE.Points(rainGeo, rainMat);
+    this._rainCloudBase = CLOUD_BASE;
+    this._rainCloudSpread = CLOUD_SPREAD;
     this.scene.add(this.rainParticles);
     this.rainParticles.visible = false;
 
@@ -1545,7 +1576,8 @@ class WeatherFlowLightningCard extends HTMLElement {
 
           const terrainY = this.getTerrainHeight(x, z);
           if (y < terrainY || y < 0) {
-            y = 20 + Math.random() * 2;
+            // [8] Reset to cloud layer, not random mid-air height
+            y = (this._rainCloudBase || 18) + Math.random() * (this._rainCloudSpread || 4);
             x = (Math.random() - 0.5) * 40;
             z = (Math.random() - 0.5) * 40;
           }
@@ -1598,12 +1630,42 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
   }
 
+  // [13] Paint the sky dome canvas with a horizon→zenith gradient.
+  // factor=0 → night, factor=1 → noon.
+  _paintSkyGradient(factor) {
+    if (!this._skyCanvas || !this._skyTexture) return;
+    const ctx = this._skyCanvas.getContext('2d');
+    const h = this._skyCanvas.height;
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+
+    // Zenith colour: deep night → clear noon blue
+    const zenithNight = [2, 4, 10];
+    const zenithDay = [14, 42, 90];
+    const zR = Math.round(zenithNight[0] + (zenithDay[0] - zenithNight[0]) * factor);
+    const zG = Math.round(zenithNight[1] + (zenithDay[1] - zenithNight[1]) * factor);
+    const zB = Math.round(zenithNight[2] + (zenithDay[2] - zenithNight[2]) * factor);
+
+    // Horizon colour: slightly lighter, warm orange tint at sunrise/sunset
+    const tHorizon = Math.sin(factor * Math.PI); // peaks at factor=0.5 (sunrise/set)
+    const hR = Math.round(zR + 60 * tHorizon);
+    const hG = Math.round(zG + 20 * tHorizon);
+    const hB = Math.round(zB + 10 * tHorizon);
+
+    grad.addColorStop(0, `rgb(${zR},${zG},${zB})`);
+    grad.addColorStop(1, `rgb(${Math.min(255,hR)},${Math.min(255,hG)},${Math.min(255,hB)})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 2, h);
+    this._skyTexture.needsUpdate = true;
+  }
+
   updateDayNightEngine() {
     if (!this.initialized || !this.scene) return;
 
     if (this.config.show_daynight === false) {
       if (this.ambientLight) {
-        this.ambientLight.color.setHex(0x0f172a);
+        // [4] HemisphereLight: sky colour stays neutral night blue
+        this.ambientLight.color.setHex(0x334155);
+        (this.ambientLight as any).groundColor?.setHex(0x0a1120);
         this.ambientLight.intensity = 1.5;
       }
       if (this.dirLight) {
@@ -1622,6 +1684,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       if (this.scene.fog) {
         this.scene.fog.color.copy(defaultBg);
       }
+      this._paintSkyGradient(0);
       return;
     }
 
@@ -1642,10 +1705,16 @@ class WeatherFlowLightningCard extends HTMLElement {
       factor = Math.max(0.0, Math.min(1.0, rad / 1000.0));
     }
 
+    // [4] HemisphereLight sky/ground colours follow day/night factor
     if (this.ambientLight) {
-      const nightColor = new THREE.Color(0x334155);
-      const dayColor = new THREE.Color(0xffffff);
-      this.ambientLight.color.copy(nightColor).lerp(dayColor, factor);
+      const nightSky = new THREE.Color(0x334155);
+      const daySky = new THREE.Color(0xbfdbfe); // pale sky blue
+      const nightGround = new THREE.Color(0x0a1120);
+      const dayGround = new THREE.Color(0x1e3a1e); // dark green-earth
+      this.ambientLight.color.copy(nightSky).lerp(daySky, factor);
+      if ((this.ambientLight as any).groundColor) {
+        (this.ambientLight as any).groundColor.copy(nightGround).lerp(dayGround, factor);
+      }
       const minB = this.config.min_brightness !== undefined ? parseFloat(this.config.min_brightness) : 0.8;
       this.ambientLight.intensity = minB + factor * (1.5 - minB);
     }
@@ -1675,9 +1744,20 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (this.renderer) {
       this.renderer.setClearColor(bg, 1);
     }
+
+    // [12] Fog density: thicker at dusk/dawn (factor≈0.5), thinner at noon
     if (this.scene.fog) {
       this.scene.fog.color.copy(bg);
+      const fogNight = 0.008;
+      const fogDay = 0.003;
+      const fogDusk = 0.010; // peaks at sunrise/sunset
+      const tDusk = Math.sin(factor * Math.PI);
+      const baseDensity = fogNight + (fogDay - fogNight) * factor;
+      (this.scene.fog as any).density = baseDensity + (fogDusk - fogNight) * tDusk * 0.5;
     }
+
+    // [13] Repaint sky dome gradient
+    this._paintSkyGradient(factor);
   }
 
   animateLoop() {
@@ -2078,23 +2158,47 @@ class WeatherFlowLightningCard extends HTMLElement {
     const targetPos = new THREE.Vector3(x, terrainY, z);
     const startPos = new THREE.Vector3(x + (Math.random() - 0.5) * 4, terrainY + 18, z + (Math.random() - 0.5) * 4);
 
-    // Lightning Bolt Lines
+    // [6] Screen-flash: spike ambient intensity to simulate sky illumination
+    if (this.ambientLight) {
+      const preFlashIntensity = this.ambientLight.intensity;
+      this.ambientLight.intensity = 4.0;
+      let flashFrame = 0;
+      const decayFlash = () => {
+        flashFrame++;
+        this.ambientLight.intensity = Math.max(
+          preFlashIntensity,
+          4.0 * (1.0 - flashFrame / 8)
+        );
+        if (flashFrame < 8) requestAnimationFrame(decayFlash);
+      };
+      requestAnimationFrame(decayFlash);
+    }
+
+    // [5] Tube geometry bolts — visible at all zoom levels, true 3D volume
     const lines = [];
     const paths = this.createLightningBranches(startPos, targetPos);
 
     paths.forEach((path, pathIdx) => {
       const curve = new THREE.CatmullRomCurve3(path);
-      const points = curve.getPoints(30);
-      const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
       const isMain = pathIdx === 0;
-      const lineMat = new THREE.LineBasicMaterial({
-        color: isMain ? 0xffdf00 : 0xffb700,
+      const tubeGeo = new THREE.TubeGeometry(
+        curve,
+        Math.max(10, path.length * 3), // segments
+        isMain ? 0.06 : 0.03,           // radius (km)
+        5,                              // radial segments
+        false
+      );
+      const tubeMat = new THREE.MeshStandardMaterial({
+        color: isMain ? 0xffffff : 0xffe066,
+        emissive: isMain ? 0xffd700 : 0xffb300,
+        emissiveIntensity: isMain ? 3.0 : 1.5,
         transparent: true,
-        opacity: isMain ? 1.0 : 0.7
+        opacity: isMain ? 1.0 : 0.75,
+        depthWrite: false
       });
-      const line = new THREE.Line(lineGeo, lineMat);
-      this.strikeLayer.add(line);
-      lines.push(line);
+      const tube = new THREE.Mesh(tubeGeo, tubeMat);
+      this.strikeLayer.add(tube);
+      lines.push(tube);
     });
 
     // Volumetric Glow Sprite
