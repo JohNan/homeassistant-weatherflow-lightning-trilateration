@@ -307,7 +307,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   updateCameraPosition() {
     this.cameraPhi = Math.max(0.1, Math.min(Math.PI / 2 - 0.05, this.cameraPhi));
-    this.zoomRadius = Math.max(10, Math.min(150, this.zoomRadius));
+    this.zoomRadius = Math.max(2.0, Math.min(150, this.zoomRadius));
 
     const x = this.zoomRadius * Math.sin(this.cameraPhi) * Math.sin(this.cameraTheta);
     const y = this.zoomRadius * Math.cos(this.cameraPhi);
@@ -2852,7 +2852,7 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
           <input type="text" id="height" value="${this._config.height || '350px'}">
         </div>
         <div class="paper-input-container">
-          <label for="zoom_level">Default Zoom Radius (10-150)</label>
+          <label for="zoom_level">Default Zoom Radius (2-150)</label>
           <input type="text" id="zoom_level" value="${this._config.zoom_level !== undefined ? this._config.zoom_level : '18.0'}">
         </div>
         <div class="paper-input-container">
