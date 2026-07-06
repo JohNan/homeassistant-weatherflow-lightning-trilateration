@@ -765,11 +765,14 @@ class WeatherFlowLightningCard extends HTMLElement {
     const ewLine = new THREE.Line(ewGeo, lineMat);
     this.rangeRingsGroup.add(ewLine);
 
-    // Distance labels on rings
+    // Distance labels on rings — placed at 45° NE on the ring circumference
+    // (r·sin45°, y, -r·cos45°) so each label sits exactly on its ring
+    // between the two crosshair arms with no ambiguity.
+    const SIN45 = Math.SQRT2 / 2;
     this.ringLabels = [];
     radii.forEach((r) => {
       const labelSprite = this.createRingLabelSprite(`${r}km`);
-      labelSprite.position.set(0.8, 0.5, -r);
+      labelSprite.position.set(r * SIN45, 0.5, -r * SIN45);
       this.rangeRingsGroup.add(labelSprite);
       this.ringLabels.push({ sprite: labelSprite, r: r });
     });
@@ -822,11 +825,12 @@ class WeatherFlowLightningCard extends HTMLElement {
       posAttr.needsUpdate = true;
     }
 
-    // Update ring labels
+    // Update ring labels — keep them on the 45° NE ring intercept
+    const SIN45 = Math.SQRT2 / 2;
     if (this.ringLabels) {
       this.ringLabels.forEach((label) => {
-        const x = 0.8;
-        const z = -label.r;
+        const x = label.r * SIN45;
+        const z = -label.r * SIN45;
         const y = this.getTerrainHeight(x, z) + 0.4;
         label.sprite.position.set(x, y, z);
       });
