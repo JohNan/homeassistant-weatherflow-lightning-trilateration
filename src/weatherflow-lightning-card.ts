@@ -232,13 +232,18 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     // Dispose Static Elements
+    if (this.terrainMapMesh) {
+      this.scene.remove(this.terrainMapMesh);
+      if (this.terrainMapMesh.geometry) this.terrainMapMesh.geometry.dispose();
+      if (this.terrainMapMesh.material) {
+        if (this.terrainMapMesh.material.map) this.terrainMapMesh.material.map.dispose();
+        this.terrainMapMesh.material.dispose();
+      }
+    }
     if (this.terrainMesh) {
       this.scene.remove(this.terrainMesh);
       if (this.terrainMesh.geometry) this.terrainMesh.geometry.dispose();
-      if (this.terrainMesh.material) {
-        if (this.terrainMesh.material.map) this.terrainMesh.material.map.dispose();
-        this.terrainMesh.material.dispose();
-      }
+      if (this.terrainMesh.material) this.terrainMesh.material.dispose();
     }
     if (this.terrainWire) {
       this.scene.remove(this.terrainWire);
@@ -360,7 +365,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     // Custom camera controls setup
     this.zoomRadius = this.config.zoom_level !== undefined ? parseFloat(this.config.zoom_level) : 18.0;
     this.cameraTheta = 0.0;
-    this.cameraPhi = Math.atan2(30, 15);
+    // [E] 45° oblique angle — terrain relief reads clearly against the horizon
+    this.cameraPhi = Math.PI / 4;
     this.updateCameraPosition();
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -912,6 +918,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
     posAttr.needsUpdate = true;
     this.terrainGeo.computeVertexNormals();
+    this._paintHypsometricColours(); // [C] hypsometric vertex colours on procedural terrain
 
     this.updateStationHeights();
     this.updateRangeRings();
@@ -919,13 +926,11 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   loadMapTexture(refLat, refLon) {
     if (this.config.show_map === false) {
-      if (this.terrainMesh && this.terrainMesh.material) {
-        this.terrainMesh.material.map = null;
-        this.terrainMesh.material.color.setHex(0x050b14);
-        this.terrainMesh.material.needsUpdate = true;
-      }
+      // [B] Hide the flat map layer; relief mesh stays visible
+      if (this.terrainMapMesh) this.terrainMapMesh.visible = false;
       return;
     }
+    if (this.terrainMapMesh) this.terrainMapMesh.visible = true;
     const zoom = 10;
     const spanKm = 40.0;
 
@@ -995,10 +1000,11 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     Promise.all(promises).then(() => {
       const texture = new THREE.CanvasTexture(canvas);
-      if (this.terrainMesh && this.terrainMesh.material) {
-        this.terrainMesh.material.map = texture;
-        this.terrainMesh.material.color.setHex(0xffffff); // change to white to prevent multiplication darkening
-        this.terrainMesh.material.needsUpdate = true;
+      // [B] Apply tile to the FLAT map mesh only — never to the displaced relief mesh
+      if (this.terrainMapMesh && this.terrainMapMesh.material) {
+        this.terrainMapMesh.material.map = texture;
+        this.terrainMapMesh.material.color.setHex(0xffffff);
+        this.terrainMapMesh.material.needsUpdate = true;
       }
     });
   }
@@ -1128,6 +1134,69 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
   }
 
+  // [C] Shared helper — maps scaledHeights (scene units) to a hypsometric
+  // green → brown → grey-white ramp and writes into terrainGeo's vertex colours.
+  // Assumes scaledHeights is already populated.
+  _paintHypsometricColours() {
+    if (!this.scaledHeights || !this.terrainGeo) return;
+
+    // Find min/max of the current scaled heights for normalisation
+    let minH = Infinity;
+    let maxH = -Infinity;
+    for (let i = 0; i < 225; i++) {
+      if (this.scaledHeights[i] < minH) minH = this.scaledHeights[i];
+      if (this.scaledHeights[i] > maxH) maxH = this.scaledHeights[i];
+    }
+    const range = maxH - minH || 1.0;
+
+    // Hypsometric colour stops (linear RGB, gamma-corrected visually)
+    // t=0.00 deep valley  → dark forest green
+    // t=0.35 lowland      → medium green
+    // t=0.55 mid slope    → olive-brown
+    // t=0.75 high slope   → warm brown
+    // t=1.00 peak         → near-white grey
+    const stops = [
+      { t: 0.00, r: 0.05, g: 0.15, b: 0.05 },
+      { t: 0.35, r: 0.12, g: 0.28, b: 0.08 },
+      { t: 0.55, r: 0.30, g: 0.22, b: 0.08 },
+      { t: 0.75, r: 0.45, g: 0.30, b: 0.18 },
+      { t: 1.00, r: 0.82, g: 0.80, b: 0.78 }
+    ];
+
+    const lerpStop = (t) => {
+      let lo = stops[0];
+      let hi = stops[stops.length - 1];
+      for (let i = 0; i < stops.length - 1; i++) {
+        if (t >= stops[i].t && t <= stops[i + 1].t) {
+          lo = stops[i];
+          hi = stops[i + 1];
+          break;
+        }
+      }
+      const f = (hi.t === lo.t) ? 0 : (t - lo.t) / (hi.t - lo.t);
+      return {
+        r: lo.r + (hi.r - lo.r) * f,
+        g: lo.g + (hi.g - lo.g) * f,
+        b: lo.b + (hi.b - lo.b) * f
+      };
+    };
+
+    const colAttr = this.terrainGeo.attributes.color;
+    // terrainGeo vertices: row r = 0..14, col c = 0..14, vertexIndex = r*15+c
+    // scaledHeights index: i = (14-r)*15+c  (matches PlaneGeometry row flip)
+    for (let r = 0; r <= 14; r++) {
+      const i = 14 - r;
+      for (let c = 0; c <= 14; c++) {
+        const h = this.scaledHeights[i * 15 + c];
+        const t = (h - minH) / range;
+        const col = lerpStop(Math.max(0, Math.min(1, t)));
+        const vi = r * 15 + c;
+        colAttr.setXYZ(vi, col.r, col.g, col.b);
+      }
+    }
+    colAttr.needsUpdate = true;
+  }
+
   updateTerrainGeometry(elevationGrid) {
     if (!elevationGrid || elevationGrid.length !== 225) {
       this.generateProceduralTerrain();
@@ -1156,6 +1225,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
     posAttr.needsUpdate = true;
     this.terrainGeo.computeVertexNormals();
+    this._paintHypsometricColours(); // [C] repaint vertex colours
 
     this.updateStationHeights();
     this.updateRangeRings();
@@ -1344,30 +1414,54 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.starField = new THREE.Points(starsGeo, starsMat);
     this.scene.add(this.starField);
 
-    // Terrain grid
+    // ── Terrain layer stack ──────────────────────────────────────────────
+    // Two independent geometries so the map tile stays orthographically
+    // correct regardless of how much vertical exaggeration is applied.
     const mapSize = 40;
-    this.terrainGeo = new THREE.PlaneGeometry(mapSize, mapSize, 14, 14);
 
-    const terrainMat = new THREE.MeshPhongMaterial({
+    // [B/D] LAYER 1 — flat map tile plane, permanently undeformed, at y=-0.01
+    // The CartoDB overhead imagery is applied here so it never gets
+    // stretched across slope faces.
+    const terrainMapGeo = new THREE.PlaneGeometry(mapSize, mapSize);
+    const terrainMapMat = new THREE.MeshBasicMaterial({
       color: 0x050b14,
-      emissive: 0x01050a,
-      specular: 0x111e2e,
-      shininess: 30,
-      flatShading: true,
-      side: THREE.DoubleSide
+      side: THREE.FrontSide
     });
+    this.terrainMapMesh = new THREE.Mesh(terrainMapGeo, terrainMapMat);
+    this.terrainMapMesh.rotation.x = -Math.PI / 2;
+    this.terrainMapMesh.position.y = -0.01; // [D] just below relief mesh — prevents z-fighting
+    this.scene.add(this.terrainMapMesh);
 
-    this.terrainMesh = new THREE.Mesh(this.terrainGeo, terrainMat);
+    // [C] LAYER 2 — displaced relief mesh with hypsometric vertex colouring.
+    // Uses a separate geometry so vertices can be pushed up without warping
+    // the tile. MeshStandardMaterial responds correctly to the hemisphere
+    // light added in the previous commit.
+    this.terrainGeo = new THREE.PlaneGeometry(mapSize, mapSize, 14, 14);
+    // Initialise vertex colours (will be repainted in updateTerrainGeometry)
+    const vertCount = 15 * 15;
+    const colours = new Float32Array(vertCount * 3);
+    colours.fill(0.02); // near-black until first elevation data arrives
+    this.terrainGeo.setAttribute('color', new THREE.BufferAttribute(colours, 3));
+
+    const reliefMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.85,
+      metalness: 0.0,
+      transparent: true,
+      opacity: 0.60,
+      side: THREE.FrontSide
+    });
+    this.terrainMesh = new THREE.Mesh(this.terrainGeo, reliefMat);
     this.terrainMesh.rotation.x = -Math.PI / 2;
     this.scene.add(this.terrainMesh);
 
+    // Wireframe on the same displaced geometry
     const wireMat = new THREE.MeshBasicMaterial({
       color: 0x00f2fe,
       wireframe: true,
       transparent: true,
       opacity: 0.15
     });
-
     this.terrainWire = new THREE.Mesh(this.terrainGeo, wireMat);
     this.terrainWire.rotation.x = -Math.PI / 2;
     this.terrainWire.visible = this.config.show_grid !== false;
