@@ -1087,50 +1087,140 @@ class WeatherFlowLightningCard extends HTMLElement {
       });
     }
 
-    // 2. Render Forests (Instanced Pine Trees)
+    // 2. Render Forests (Point-in-Polygon Grid generation)
     if (data.forest && Array.isArray(data.forest)) {
-      const treePositions = [];
-
+      const forestPolygons = [];
       data.forest.forEach((poly) => {
         if (!poly.coordinates || poly.coordinates.length < 3) return;
-
-        poly.coordinates.forEach((pt, idx) => {
-          if (idx % 4 !== 0) return;
-
+        const pts = poly.coordinates.map((pt) => {
           const lat = pt[0];
           const lon = pt[1];
           const x = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
           const worldZ = -R * (lat - refLat) * (Math.PI / 180.0);
-
-          if (x < -19.5 || x > 19.5 || worldZ < -19.5 || worldZ > 19.5) return;
-
-          const y = this.getTerrainHeight(x, worldZ);
-          treePositions.push(new THREE.Vector3(x, y, worldZ));
+          return [x, worldZ];
         });
+        forestPolygons.push(pts);
       });
 
-      if (treePositions.length > 0) {
-        const treeGeo = new THREE.ConeGeometry(0.12, 0.45, 4);
-        treeGeo.translate(0, 0.225, 0);
-        const treeMat = new THREE.MeshPhongMaterial({
-          color: 0x166534,
-          flatShading: true
-        });
+      const isPointInPolygon = (point, vs) => {
+        const x = point[0],
+          y = point[1];
+        let inside = false;
+        for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+          const xi = vs[i][0],
+            yi = vs[i][1];
+          const xj = vs[j][0],
+            yj = vs[j][1];
+          const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+          if (intersect) inside = !inside;
+        }
+        return inside;
+      };
 
-        const instancedMesh = new THREE.InstancedMesh(treeGeo, treeMat, treePositions.length);
-        const dummy = new THREE.Object3D();
+      const isInsideAnyForest = (pt) => {
+        for (const poly of forestPolygons) {
+          if (isPointInPolygon(pt, poly)) return true;
+        }
+        return false;
+      };
 
-        treePositions.forEach((pos, idx) => {
-          dummy.position.copy(pos);
-          const s = 0.8 + Math.random() * 0.4;
-          dummy.scale.set(s, s, s);
-          dummy.updateMatrix();
-          instancedMesh.setMatrixAt(idx, dummy.matrix);
-        });
+      const SPACING = 0.7;
+      const MAX_TREES = 1500;
+      const MAX_JITTER = SPACING * 0.35;
 
-        instancedMesh.instanceMatrix.needsUpdate = true;
-        this.features3DGroup.add(instancedMesh);
+      const pineInstances = [];
+      const oakInstances = [];
+      const birchInstances = [];
+
+      let treeCount = 0;
+
+      // Candidate grid
+      for (let x = -19.5; x <= 19.5; x += SPACING) {
+        for (let z = -19.5; z <= 19.5; z += SPACING) {
+          if (treeCount >= MAX_TREES) break;
+
+          const jx = x + (Math.random() * 2 - 1) * MAX_JITTER;
+          const jz = z + (Math.random() * 2 - 1) * MAX_JITTER;
+
+          const cx = Math.max(-19.5, Math.min(19.5, jx));
+          const cz = Math.max(-19.5, Math.min(19.5, jz));
+
+          if (isInsideAnyForest([cx, cz])) {
+            const y = this.getTerrainHeight(cx, cz);
+            const scale = 0.85 + Math.random() * 0.4;
+            const rotY = Math.random() * Math.PI * 2;
+
+            const dummy = new THREE.Object3D();
+            dummy.position.set(cx, y, cz);
+            dummy.rotation.y = rotY;
+            dummy.scale.set(scale, scale, scale);
+            dummy.updateMatrix();
+
+            const r = Math.random();
+            if (r < 0.33) {
+              pineInstances.push(dummy.matrix.clone());
+            } else if (r < 0.66) {
+              oakInstances.push(dummy.matrix.clone());
+            } else {
+              birchInstances.push(dummy.matrix.clone());
+            }
+
+            treeCount++;
+          }
+        }
       }
+
+      const addInstancedGroup = (matrices, trunkGeo, trunkMat, leafGeos, leafMats) => {
+        if (matrices.length === 0) return;
+        const imTrunk = new THREE.InstancedMesh(trunkGeo, trunkMat, matrices.length);
+        matrices.forEach((mat, idx) => imTrunk.setMatrixAt(idx, mat));
+        imTrunk.instanceMatrix.needsUpdate = true;
+        this.features3DGroup.add(imTrunk);
+
+        for (let i = 0; i < leafGeos.length; i++) {
+          const imLeaf = new THREE.InstancedMesh(leafGeos[i], leafMats[i], matrices.length);
+          matrices.forEach((mat, idx) => imLeaf.setMatrixAt(idx, mat));
+          imLeaf.instanceMatrix.needsUpdate = true;
+          this.features3DGroup.add(imLeaf);
+        }
+      };
+
+      // Pine
+      const pineTrunkGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.2, 4);
+      pineTrunkGeo.translate(0, 0.1, 0);
+      const pineTrunkMat = new THREE.MeshPhongMaterial({ color: 0x3d2817, flatShading: true }); // dark brown
+      const pineLeafMat = new THREE.MeshPhongMaterial({ color: 0x0f3b1b, flatShading: true }); // dark green
+      const pineCones = [
+        new THREE.ConeGeometry(0.18, 0.3, 5).translate(0, 0.3, 0),
+        new THREE.ConeGeometry(0.14, 0.25, 5).translate(0, 0.45, 0),
+        new THREE.ConeGeometry(0.1, 0.2, 5).translate(0, 0.6, 0)
+      ];
+
+      addInstancedGroup(pineInstances, pineTrunkGeo, pineTrunkMat, pineCones, [pineLeafMat, pineLeafMat, pineLeafMat]);
+
+      // Oak
+      const oakTrunkGeo = new THREE.CylinderGeometry(0.06, 0.08, 0.25, 5);
+      oakTrunkGeo.translate(0, 0.125, 0);
+      const oakTrunkMat = new THREE.MeshPhongMaterial({ color: 0x5c4033, flatShading: true }); // warm brown
+      const oakLeafMat = new THREE.MeshPhongMaterial({ color: 0x228b22, flatShading: true }); // leafy green
+      const oakSpheres = [
+        new THREE.SphereGeometry(0.18, 6, 6).translate(-0.05, 0.3, 0),
+        new THREE.SphereGeometry(0.2, 6, 6).translate(0.05, 0.35, 0)
+      ];
+
+      addInstancedGroup(oakInstances, oakTrunkGeo, oakTrunkMat, oakSpheres, [oakLeafMat, oakLeafMat]);
+
+      // Birch
+      const birchTrunkGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.3, 4);
+      birchTrunkGeo.translate(0, 0.15, 0);
+      const birchTrunkMat = new THREE.MeshPhongMaterial({ color: 0xd3d3d3, flatShading: true }); // light grey
+      const birchLeafMat = new THREE.MeshPhongMaterial({ color: 0x90ee90, flatShading: true }); // light green
+      // vertically stretched sphere: scale Y, then translate
+      const birchCanopyGeo = new THREE.SphereGeometry(0.15, 6, 6);
+      birchCanopyGeo.scale(1, 1.8, 1);
+      birchCanopyGeo.translate(0, 0.4, 0);
+
+      addInstancedGroup(birchInstances, birchTrunkGeo, birchTrunkMat, [birchCanopyGeo], [birchLeafMat]);
     }
   }
 
@@ -1156,11 +1246,11 @@ class WeatherFlowLightningCard extends HTMLElement {
     // t=0.75 high slope   → warm brown
     // t=1.00 peak         → near-white grey
     const stops = [
-      { t: 0.00, r: 0.05, g: 0.15, b: 0.05 },
+      { t: 0.0, r: 0.05, g: 0.15, b: 0.05 },
       { t: 0.35, r: 0.12, g: 0.28, b: 0.08 },
-      { t: 0.55, r: 0.30, g: 0.22, b: 0.08 },
-      { t: 0.75, r: 0.45, g: 0.30, b: 0.18 },
-      { t: 1.00, r: 0.82, g: 0.80, b: 0.78 }
+      { t: 0.55, r: 0.3, g: 0.22, b: 0.08 },
+      { t: 0.75, r: 0.45, g: 0.3, b: 0.18 },
+      { t: 1.0, r: 0.82, g: 0.8, b: 0.78 }
     ];
 
     const lerpStop = (t) => {
@@ -1173,7 +1263,7 @@ class WeatherFlowLightningCard extends HTMLElement {
           break;
         }
       }
-      const f = (hi.t === lo.t) ? 0 : (t - lo.t) / (hi.t - lo.t);
+      const f = hi.t === lo.t ? 0 : (t - lo.t) / (hi.t - lo.t);
       return {
         r: lo.r + (hi.r - lo.r) * f,
         g: lo.g + (hi.g - lo.g) * f,
@@ -1448,7 +1538,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       roughness: 0.85,
       metalness: 0.0,
       transparent: true,
-      opacity: 0.60,
+      opacity: 0.6,
       side: THREE.FrontSide
     });
     this.terrainMesh = new THREE.Mesh(this.terrainGeo, reliefMat);
@@ -1746,7 +1836,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     const hB = Math.round(zB + 10 * tHorizon);
 
     grad.addColorStop(0, `rgb(${zR},${zG},${zB})`);
-    grad.addColorStop(1, `rgb(${Math.min(255,hR)},${Math.min(255,hG)},${Math.min(255,hB)})`);
+    grad.addColorStop(1, `rgb(${Math.min(255, hR)},${Math.min(255, hG)},${Math.min(255, hB)})`);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 2, h);
     this._skyTexture.needsUpdate = true;
@@ -1844,7 +1934,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.scene.fog.color.copy(bg);
       const fogNight = 0.008;
       const fogDay = 0.003;
-      const fogDusk = 0.010; // peaks at sunrise/sunset
+      const fogDusk = 0.01; // peaks at sunrise/sunset
       const tDusk = Math.sin(factor * Math.PI);
       const baseDensity = fogNight + (fogDay - fogNight) * factor;
       (this.scene.fog as any).density = baseDensity + (fogDusk - fogNight) * tDusk * 0.5;
@@ -2259,10 +2349,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       let flashFrame = 0;
       const decayFlash = () => {
         flashFrame++;
-        this.ambientLight.intensity = Math.max(
-          preFlashIntensity,
-          4.0 * (1.0 - flashFrame / 8)
-        );
+        this.ambientLight.intensity = Math.max(preFlashIntensity, 4.0 * (1.0 - flashFrame / 8));
         if (flashFrame < 8) requestAnimationFrame(decayFlash);
       };
       requestAnimationFrame(decayFlash);
@@ -2278,8 +2365,8 @@ class WeatherFlowLightningCard extends HTMLElement {
       const tubeGeo = new THREE.TubeGeometry(
         curve,
         Math.max(10, path.length * 3), // segments
-        isMain ? 0.06 : 0.03,           // radius (km)
-        5,                              // radial segments
+        isMain ? 0.06 : 0.03, // radius (km)
+        5, // radial segments
         false
       );
       const tubeMat = new THREE.MeshStandardMaterial({
