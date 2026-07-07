@@ -4,13 +4,27 @@
 python = "3.12"
 
 [tasks.lint]
-description = "Check Python syntax compilation"
-run = "python3 -m py_compile custom_components/weatherflow_lightning_trilateration/*.py"
+description = "Run the same Python lint checks as CI (Ruff, Black, isort)"
+run = """
+ruff check .
+black --check .
+isort --profile black --check-only .
+"""
 
 [tasks.validate-json]
 description = "Validate structure and syntax of manifest, translation, and HACS configurations"
 run = "python3 -c \"import json; [json.load(open(f)) for f in ('custom_components/weatherflow_lightning_trilateration/manifest.json', 'custom_components/weatherflow_lightning_trilateration/translations/en.json', 'hacs.json')]\""
 
+# NOTE: the final `npm run build` step here is a real build, not a dry-run,
+# so it rewrites the committed
+# custom_components/weatherflow_lightning_trilateration/dist/weatherflow-lightning-card.js
+# as a side effect of "validation". This is intentional for now: esbuild has no
+# built-in "compile but don't write" mode, and `tsc --noEmit` (the "typecheck"
+# step above) doesn't catch bundler-level failures. Splitting this into a
+# separate check-only build (e.g. writing to a throwaway path) would be cleaner
+# but requires touching package.json's build script wiring and .gitignore, which
+# is out of scope here. If dist/ ends up modified after running this task, that
+# just means the checked-in bundle was stale relative to src/ — review the diff.
 [tasks.validate-js]
 description = "Validate JavaScript/TypeScript card syntax, linting, formatting, and build"
 run = "npm run lint && npm run format:check && npm run typecheck && npm run build"

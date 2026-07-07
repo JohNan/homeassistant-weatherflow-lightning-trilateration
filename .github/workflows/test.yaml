@@ -1,0 +1,33 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout local repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Home Assistant itself is mocked via sys.modules in tests/test_trilateration.py,
+      # so it does not need to be installed here. We only need the third-party
+      # packages the integration imports directly at module load time.
+      - name: Install test dependencies
+        run: uv pip install --system pytest "websockets>=12.0" voluptuous
+
+      - name: Run pytest
+        run: pytest tests/ -q

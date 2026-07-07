@@ -7,6 +7,31 @@ declare global {
 
 declare const THREE: any;
 
+// ---- Tunable constants ------------------------------------------------------
+// Equirectangular projection: km-per-degree at the equator, and the mean
+// Earth radius used to convert lat/lon deltas into local scene-grid km.
+const EARTH_RADIUS_KM = 6371.0;
+const KM_PER_DEGREE_LAT = 111.1;
+// The elevation grid supplied by the backend is a 15x15 sample grid (225 cells).
+const ELEVATION_GRID_SIZE = 15;
+const ELEVATION_GRID_MAX_INDEX = ELEVATION_GRID_SIZE - 1; // 14
+const ELEVATION_GRID_CELL_COUNT = ELEVATION_GRID_SIZE * ELEVATION_GRID_SIZE; // 225
+const ELEVATION_GRID_CENTER_INDEX = Math.floor(ELEVATION_GRID_MAX_INDEX / 2); // 7
+// Local scene grid spans a 40km-wide square centered on the reference station.
+const MAP_SIZE_KM = 40;
+const MAP_HALF_SIZE_KM = MAP_SIZE_KM / 2;
+// Lightning strike burst animation length, in animation frames (~1s at 60fps).
+const STRIKE_ANIMATION_DURATION_FRAMES = 60;
+// Playback timeline window: how far back "live" mode looks when there is no
+// strike history yet.
+const STRIKE_HISTORY_WINDOW_MS = 3600000; // 1 hour
+// How long a heatmap afterglow marker stays visible once a strike lands.
+const HEATMAP_LIFESPAN_MS = 90000; // 90s
+// Cap the render loop so idle scenes on high refresh-rate displays don't
+// burn CPU/GPU re-rendering an unchanged frame every rAF tick.
+const TARGET_FPS = 60;
+const MIN_FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
+
 class WeatherFlowLightningCard extends HTMLElement {
   [key: string]: any;
 
@@ -20,14 +45,12 @@ class WeatherFlowLightningCard extends HTMLElement {
       { id: 'Neighbor 1', x: 10, z: 10, color: 0x38bdf8 },
       { id: 'Neighbor 2', x: -10, z: 10, color: 0x38bdf8 }
     ];
-    this.domeRings = [];
     this.strikeLayer = null;
     this.strikeHistory = [];
     this.isPlaying = false;
     this.playbackMode = 'live';
     this.playbackTime = Date.now();
     this.playbackSpeed = 120; // 120x speed playback
-    this.lastTickTime = Date.now();
     this.lastPlayTickTime = Date.now();
     this.lastInteractionTime = Date.now();
     this.heatmapMeshes = new Map();
@@ -44,6 +67,12 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.windParticles = null;
     this.lastFrameTime = null;
     this.showHeightColor = true;
+    // Tracks in-flight detached rAF chains (decayFlash/animateSequence) so
+    // cleanupThreeJS can cancel them on teardown instead of leaving them to
+    // run against a nulled-out scene.
+    this._activeRafIds = new Set();
+    // De-dupes noisy console.warn calls in the `set hass` hot path.
+    this._warnedKeys = new Set();
   }
 
   static getConfigElement() {
@@ -83,7 +112,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.speedSelect.value = this.playbackSpeed.toString();
     }
     if (this.container) {
-      const height = this.config.height;
+      const height = String(this.config.height);
       if (height.endsWith('px')) {
         const val = parseInt(height);
         this.container.style.height = `${val - 40}px`;
@@ -141,7 +170,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     if (oldConfig.elevation_scale !== this.config.elevation_scale) {
-      if (this.elevationGrid && this.elevationGrid.length === 225) {
+      if (this.elevationGrid && this.elevationGrid.length === ELEVATION_GRID_CELL_COUNT) {
         this.updateTerrainGeometry(this.elevationGrid);
       } else {
         this.generateProceduralTerrain();
@@ -166,12 +195,24 @@ class WeatherFlowLightningCard extends HTMLElement {
   connectedCallback() {
     if (window.THREE) {
       this.initVisualizer();
-    } else {
-      const script = document.createElement('script');
-      script.src = '/weatherflow_lightning_trilateration/three.min.js';
-      script.onload = () => this.initVisualizer();
-      document.head.appendChild(script);
+      return;
     }
+    // Guard against appending a duplicate <script> tag if the element is
+    // rapidly disconnected/reconnected (e.g. moved in the DOM) before the
+    // first script finishes loading.
+    if (this._threeScriptLoading) return;
+    this._threeScriptLoading = true;
+    const script = document.createElement('script');
+    script.src = '/weatherflow_lightning_trilateration/three.min.js';
+    script.onload = () => {
+      this._threeScriptLoading = false;
+      this.initVisualizer();
+    };
+    script.onerror = (err) => {
+      this._threeScriptLoading = false;
+      console.error('WeatherFlow Card: Failed to load three.min.js', err);
+    };
+    document.head.appendChild(script);
   }
 
   disconnectedCallback() {
@@ -183,6 +224,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
+    }
+
+    // Cancel any detached rAF chains (strike flash decay / strike burst
+    // sequences) so they don't keep firing against a torn-down scene.
+    if (this._activeRafIds) {
+      this._activeRafIds.forEach((id) => cancelAnimationFrame(id));
+      this._activeRafIds.clear();
     }
 
     if (this.resizeObserver) {
@@ -257,6 +305,17 @@ class WeatherFlowLightningCard extends HTMLElement {
       if (this.starField.geometry) this.starField.geometry.dispose();
       if (this.starField.material) this.starField.material.dispose();
     }
+    if (this._skyDome) {
+      this.scene.remove(this._skyDome);
+      if (this._skyDome.geometry) this._skyDome.geometry.dispose();
+      if (this._skyDome.material) this._skyDome.material.dispose();
+      this._skyDome = null;
+    }
+    if (this._skyTexture) {
+      this._skyTexture.dispose();
+      this._skyTexture = null;
+    }
+    this._skyCanvas = null;
     if (this.rainParticles) {
       this.scene.remove(this.rainParticles);
       if (this.rainParticles.geometry) this.rainParticles.geometry.dispose();
@@ -298,11 +357,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     obj.traverse((child) => {
       if (child.geometry) child.geometry.dispose();
       if (child.material) {
-        if (Array.isArray(child.material)) {
-          child.material.forEach((m) => m.dispose());
-        } else {
-          child.material.dispose();
-        }
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        materials.forEach((m) => {
+          // Sprite/canvas-backed materials (labels, glow sprites) own a
+          // CanvasTexture that must be disposed separately from the material.
+          if (m.map) m.map.dispose();
+          m.dispose();
+        });
       }
     });
   }
@@ -345,7 +406,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.container = document.createElement('div');
     this.container.style.position = 'relative';
     this.container.style.width = '100%';
-    const height = this.config.height || '350px';
+    const height = String(this.config.height || '350px');
     if (height.endsWith('px')) {
       const val = parseInt(height);
       this.container.style.height = `${val - 40}px`;
@@ -726,6 +787,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     canvas.width = 64;
     canvas.height = 64;
     const ctx = canvas.getContext('2d');
+    const texture = new THREE.CanvasTexture(canvas);
+    if (!ctx) return texture;
 
     const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
     grad.addColorStop(0, 'rgba(0, 242, 254, 1.0)');
@@ -735,8 +798,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 64, 64);
-
-    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
     return texture;
   }
 
@@ -745,6 +807,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     canvas.width = 128;
     canvas.height = 64;
     const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      const texture = new THREE.CanvasTexture(canvas);
+      const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+      const sprite = new THREE.Sprite(spriteMaterial);
+      sprite.scale.set(2.0, 1.0, 1.0);
+      return sprite;
+    }
     ctx.fillStyle = 'rgba(0, 0, 0, 0)';
     ctx.fillRect(0, 0, 128, 64);
 
@@ -901,17 +970,17 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   getTerrainHeight(x, z) {
-    if (!this.elevationGrid || this.elevationGrid.length !== 225) return 0;
+    if (!this.elevationGrid || this.elevationGrid.length !== ELEVATION_GRID_CELL_COUNT) return 0;
 
-    const c = ((x + 20) * 14) / 40;
-    const r = ((z + 20) * 14) / 40;
+    const c = ((x + MAP_HALF_SIZE_KM) * ELEVATION_GRID_MAX_INDEX) / MAP_SIZE_KM;
+    const r = ((z + MAP_HALF_SIZE_KM) * ELEVATION_GRID_MAX_INDEX) / MAP_SIZE_KM;
 
-    if (c < 0 || c > 14 || r < 0 || r > 14) return 0;
+    if (c < 0 || c > ELEVATION_GRID_MAX_INDEX || r < 0 || r > ELEVATION_GRID_MAX_INDEX) return 0;
 
     const c0 = Math.floor(c);
-    const c1 = Math.min(14, c0 + 1);
+    const c1 = Math.min(ELEVATION_GRID_MAX_INDEX, c0 + 1);
     const r0 = Math.floor(r);
-    const r1 = Math.min(14, r0 + 1);
+    const r1 = Math.min(ELEVATION_GRID_MAX_INDEX, r0 + 1);
 
     const tx = c - c0;
     const tz = r - r0;
@@ -929,20 +998,20 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   getGridHeight(r, c) {
     if (!this.scaledHeights) return 0;
-    return this.scaledHeights[(14 - r) * 15 + c];
+    return this.scaledHeights[(ELEVATION_GRID_MAX_INDEX - r) * ELEVATION_GRID_SIZE + c];
   }
 
   generateProceduralTerrain() {
     this.elevationGrid = [];
 
-    for (let i = 0; i < 15; i++) {
-      const x = i - 7;
-      for (let j = 0; j < 15; j++) {
-        const y = j - 7;
+    for (let i = 0; i < ELEVATION_GRID_SIZE; i++) {
+      const x = i - ELEVATION_GRID_CENTER_INDEX;
+      for (let j = 0; j < ELEVATION_GRID_SIZE; j++) {
+        const y = j - ELEVATION_GRID_CENTER_INDEX;
         const dist = Math.sqrt(x * x + y * y);
         let elev = 80 + Math.sin(x * 0.4) * Math.cos(y * 0.4) * 45;
         elev += Math.sin(dist * 0.8) * 15;
-        if (i === 7 && j === 7) {
+        if (i === ELEVATION_GRID_CENTER_INDEX && j === ELEVATION_GRID_CENTER_INDEX) {
           elev = 100;
         } else {
           const weight = Math.min(1.0, dist / 3.0);
@@ -955,20 +1024,22 @@ class WeatherFlowLightningCard extends HTMLElement {
     const refElevation = 100;
     const exaggeration = this.config.elevation_scale !== undefined ? parseFloat(this.config.elevation_scale) : 1.5;
     const scaleFactor = exaggeration / 1000.0;
-    this.scaledHeights = new Float32Array(225);
-    for (let i = 0; i < 225; i++) {
+    this.scaledHeights = new Float32Array(ELEVATION_GRID_CELL_COUNT);
+    for (let i = 0; i < ELEVATION_GRID_CELL_COUNT; i++) {
       this.scaledHeights[i] = ((this.elevationGrid[i] || 0) - refElevation) * scaleFactor;
     }
 
+    // Walk every vertex of the (possibly much finer, e.g. 31x31) render mesh
+    // and sample the interpolated terrain height at its position — mirrors
+    // updateTerrainGeometry(). Do NOT assume the render mesh's vertex count
+    // or stride matches the 15x15 elevation sample grid.
     const posAttr = this.terrainGeo.attributes.position;
-    for (let r = 0; r <= 14; r++) {
-      const i = 14 - r;
-      for (let c = 0; c <= 14; c++) {
-        const j = c;
-        const vertexIndex = r * 15 + c;
-        const relElev = this.scaledHeights[i * 15 + j];
-        posAttr.setZ(vertexIndex, relElev);
-      }
+    const count = posAttr.count;
+    for (let i = 0; i < count; i++) {
+      const vx = posAttr.getX(i);
+      const vy = posAttr.getY(i);
+      const relElev = this.getTerrainHeight(vx, -vy);
+      posAttr.setZ(i, relElev);
     }
     posAttr.needsUpdate = true;
     this.terrainGeo.computeVertexNormals();
@@ -986,11 +1057,11 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
     if (this.terrainMapMesh) this.terrainMapMesh.visible = true;
     const zoom = 10;
-    const spanKm = 40.0;
+    const spanKm = MAP_SIZE_KM;
 
-    const latSpan = spanKm / 111.1;
+    const latSpan = spanKm / KM_PER_DEGREE_LAT;
     const cosLat = Math.cos((refLat * Math.PI) / 180.0);
-    const lonSpan = cosLat > 0 ? spanKm / (111.1 * cosLat) : spanKm / 111.1;
+    const lonSpan = cosLat > 0 ? spanKm / (KM_PER_DEGREE_LAT * cosLat) : spanKm / KM_PER_DEGREE_LAT;
 
     const minLat = refLat - latSpan / 2;
     const maxLat = refLat + latSpan / 2;
@@ -1013,6 +1084,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     canvas.width = 1024;
     canvas.height = 1024;
     const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
     ctx.fillStyle = '#050b14';
     ctx.fillRect(0, 0, 1024, 1024);
@@ -1056,9 +1128,17 @@ class WeatherFlowLightningCard extends HTMLElement {
       const texture = new THREE.CanvasTexture(canvas);
       // [B] Apply tile to the FLAT map mesh only — never to the displaced relief mesh
       if (this.terrainMapMesh && this.terrainMapMesh.material) {
+        // Dispose the previous CanvasTexture before replacing it — each call
+        // to loadMapTexture (station relocation, config toggle) previously
+        // leaked the old GPU texture.
+        if (this.terrainMapMesh.material.map) {
+          this.terrainMapMesh.material.map.dispose();
+        }
         this.terrainMapMesh.material.map = texture;
         this.terrainMapMesh.material.color.setHex(0xffffff);
         this.terrainMapMesh.material.needsUpdate = true;
+      } else {
+        texture.dispose();
       }
     });
   }
@@ -1076,28 +1156,28 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
   }
 
+  // Converts a lat/lon pair to local scene-grid km coordinates relative to
+  // (refLat, refLon), using an equirectangular approximation that's accurate
+  // enough over the ~40km visualization radius. Single source of truth for
+  // this conversion — previously duplicated in render3DFeatures() and the
+  // `hass` setter's station/strike mapping.
+  _latLonToGrid(lat, lon, refLat, refLon) {
+    const cosLat = Math.cos((refLat * Math.PI) / 180.0);
+    const x = EARTH_RADIUS_KM * (lon - refLon) * (Math.PI / 180.0) * cosLat;
+    const z = -EARTH_RADIUS_KM * (lat - refLat) * (Math.PI / 180.0);
+    return { x, z };
+  }
+
   render3DFeatures(data, refLat, refLon) {
     if (!this.scene) return;
 
     if (this.features3DGroup) {
       this.scene.remove(this.features3DGroup);
-      this.features3DGroup.traverse((child) => {
-        if (child.geometry) child.geometry.dispose();
-        if (child.material) {
-          if (Array.isArray(child.material)) {
-            child.material.forEach((m) => m.dispose());
-          } else {
-            child.material.dispose();
-          }
-        }
-      });
+      this.disposeHierarchy(this.features3DGroup);
     }
 
     this.features3DGroup = new THREE.Group();
     this.scene.add(this.features3DGroup);
-
-    const R = 6371.0;
-    const cosLat = Math.cos((refLat * Math.PI) / 180.0);
 
     // 1. Render Waterbodies (Lakes)
     if (data.water && Array.isArray(data.water)) {
@@ -1119,8 +1199,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         poly.coordinates.forEach((pt) => {
           const lat = pt[0];
           const lon = pt[1];
-          const x = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-          const worldZ = -R * (lat - refLat) * (Math.PI / 180.0);
+          const { x, z: worldZ } = this._latLonToGrid(lat, lon, refLat, refLon);
 
           if (x < -20 || x > 20 || worldZ < -20 || worldZ > 20) return;
 
@@ -1183,8 +1262,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         const pts = poly.coordinates.map((pt) => {
           const lat = pt[0];
           const lon = pt[1];
-          const x = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-          const worldZ = -R * (lat - refLat) * (Math.PI / 180.0);
+          const { x, z: worldZ } = this._latLonToGrid(lat, lon, refLat, refLon);
           if (x >= -20 && x <= 20 && worldZ >= -20 && worldZ <= 20) {
             shapePoints.push(new THREE.Vector2(x, -worldZ));
             avgY += this.getTerrainHeight(x, worldZ);
@@ -1299,42 +1377,54 @@ class WeatherFlowLightningCard extends HTMLElement {
         }
       };
 
-      // Pine
-      const pineTrunkGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.2, 4);
-      pineTrunkGeo.translate(0, 0.1, 0);
-      const pineTrunkMat = new THREE.MeshPhongMaterial({ color: 0x3d2817, flatShading: true }); // dark brown
-      const pineLeafMat = new THREE.MeshPhongMaterial({ color: 0x0f3b1b, flatShading: true }); // dark green
-      const pineCones = [
-        new THREE.ConeGeometry(0.18, 0.3, 5).translate(0, 0.3, 0),
-        new THREE.ConeGeometry(0.14, 0.25, 5).translate(0, 0.45, 0),
-        new THREE.ConeGeometry(0.1, 0.2, 5).translate(0, 0.6, 0)
-      ];
+      // Species geometries/materials are only constructed when there's at
+      // least one instance to render — building them unconditionally leaked
+      // a full set of trunk/leaf geometries whenever a bucket ended up empty.
+      if (pineInstances.length > 0) {
+        const pineTrunkGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.2, 4);
+        pineTrunkGeo.translate(0, 0.1, 0);
+        const pineTrunkMat = new THREE.MeshPhongMaterial({ color: 0x3d2817, flatShading: true }); // dark brown
+        const pineLeafMat = new THREE.MeshPhongMaterial({ color: 0x0f3b1b, flatShading: true }); // dark green
+        const pineCones = [
+          new THREE.ConeGeometry(0.18, 0.3, 5).translate(0, 0.3, 0),
+          new THREE.ConeGeometry(0.14, 0.25, 5).translate(0, 0.45, 0),
+          new THREE.ConeGeometry(0.1, 0.2, 5).translate(0, 0.6, 0)
+        ];
 
-      addInstancedGroup(pineInstances, pineTrunkGeo, pineTrunkMat, pineCones, [pineLeafMat, pineLeafMat, pineLeafMat]);
+        addInstancedGroup(pineInstances, pineTrunkGeo, pineTrunkMat, pineCones, [
+          pineLeafMat,
+          pineLeafMat,
+          pineLeafMat
+        ]);
+      }
 
       // Oak
-      const oakTrunkGeo = new THREE.CylinderGeometry(0.06, 0.08, 0.25, 5);
-      oakTrunkGeo.translate(0, 0.125, 0);
-      const oakTrunkMat = new THREE.MeshPhongMaterial({ color: 0x5c4033, flatShading: true }); // warm brown
-      const oakLeafMat = new THREE.MeshPhongMaterial({ color: 0x228b22, flatShading: true }); // leafy green
-      const oakSpheres = [
-        new THREE.SphereGeometry(0.18, 6, 6).translate(-0.05, 0.3, 0),
-        new THREE.SphereGeometry(0.2, 6, 6).translate(0.05, 0.35, 0)
-      ];
+      if (oakInstances.length > 0) {
+        const oakTrunkGeo = new THREE.CylinderGeometry(0.06, 0.08, 0.25, 5);
+        oakTrunkGeo.translate(0, 0.125, 0);
+        const oakTrunkMat = new THREE.MeshPhongMaterial({ color: 0x5c4033, flatShading: true }); // warm brown
+        const oakLeafMat = new THREE.MeshPhongMaterial({ color: 0x228b22, flatShading: true }); // leafy green
+        const oakSpheres = [
+          new THREE.SphereGeometry(0.18, 6, 6).translate(-0.05, 0.3, 0),
+          new THREE.SphereGeometry(0.2, 6, 6).translate(0.05, 0.35, 0)
+        ];
 
-      addInstancedGroup(oakInstances, oakTrunkGeo, oakTrunkMat, oakSpheres, [oakLeafMat, oakLeafMat]);
+        addInstancedGroup(oakInstances, oakTrunkGeo, oakTrunkMat, oakSpheres, [oakLeafMat, oakLeafMat]);
+      }
 
       // Birch
-      const birchTrunkGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.3, 4);
-      birchTrunkGeo.translate(0, 0.15, 0);
-      const birchTrunkMat = new THREE.MeshPhongMaterial({ color: 0xd3d3d3, flatShading: true }); // light grey
-      const birchLeafMat = new THREE.MeshPhongMaterial({ color: 0x90ee90, flatShading: true }); // light green
-      // vertically stretched sphere: scale Y, then translate
-      const birchCanopyGeo = new THREE.SphereGeometry(0.15, 6, 6);
-      birchCanopyGeo.scale(1, 1.8, 1);
-      birchCanopyGeo.translate(0, 0.4, 0);
+      if (birchInstances.length > 0) {
+        const birchTrunkGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.3, 4);
+        birchTrunkGeo.translate(0, 0.15, 0);
+        const birchTrunkMat = new THREE.MeshPhongMaterial({ color: 0xd3d3d3, flatShading: true }); // light grey
+        const birchLeafMat = new THREE.MeshPhongMaterial({ color: 0x90ee90, flatShading: true }); // light green
+        // vertically stretched sphere: scale Y, then translate
+        const birchCanopyGeo = new THREE.SphereGeometry(0.15, 6, 6);
+        birchCanopyGeo.scale(1, 1.8, 1);
+        birchCanopyGeo.translate(0, 0.4, 0);
 
-      addInstancedGroup(birchInstances, birchTrunkGeo, birchTrunkMat, [birchCanopyGeo], [birchLeafMat]);
+        addInstancedGroup(birchInstances, birchTrunkGeo, birchTrunkMat, [birchCanopyGeo], [birchLeafMat]);
+      }
     }
   }
 
@@ -1347,7 +1437,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     // Find min/max of the current scaled heights for normalisation
     let minH = Infinity;
     let maxH = -Infinity;
-    for (let i = 0; i < 225; i++) {
+    for (let i = 0; i < ELEVATION_GRID_CELL_COUNT; i++) {
       if (this.scaledHeights[i] < minH) minH = this.scaledHeights[i];
       if (this.scaledHeights[i] > maxH) maxH = this.scaledHeights[i];
     }
@@ -1404,18 +1494,18 @@ class WeatherFlowLightningCard extends HTMLElement {
   }
 
   updateTerrainGeometry(elevationGrid) {
-    if (!elevationGrid || elevationGrid.length !== 225) {
+    if (!elevationGrid || elevationGrid.length !== ELEVATION_GRID_CELL_COUNT) {
       this.generateProceduralTerrain();
       return;
     }
     this.elevationGrid = elevationGrid;
 
-    const centerIndex = 7 * 15 + 7;
+    const centerIndex = ELEVATION_GRID_CENTER_INDEX * ELEVATION_GRID_SIZE + ELEVATION_GRID_CENTER_INDEX;
     const refElevation = elevationGrid[centerIndex] || 0;
     const exaggeration = this.config.elevation_scale !== undefined ? parseFloat(this.config.elevation_scale) : 1.5;
     const scaleFactor = exaggeration / 1000.0;
-    this.scaledHeights = new Float32Array(225);
-    for (let i = 0; i < 225; i++) {
+    this.scaledHeights = new Float32Array(ELEVATION_GRID_CELL_COUNT);
+    for (let i = 0; i < ELEVATION_GRID_CELL_COUNT; i++) {
       this.scaledHeights[i] = ((elevationGrid[i] || 0) - refElevation) * scaleFactor;
     }
 
@@ -1511,7 +1601,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   updateHeatmap() {
     if (!this.scene) return;
-    const lifespan = 90000;
+    const lifespan = HEATMAP_LIFESPAN_MS;
     const nowVirtual = this.playbackTime;
 
     if (!this.heatmapMeshes) {
@@ -1773,6 +1863,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     const rainRateStr = (this.rainRate || 0).toFixed(1);
     const windDir = this.windDirection || 0;
 
+    // Skip the innerHTML rebuild when nothing displayed would actually
+    // change — `set hass` calls this on every state update, but the HUD
+    // content (rounded values, collapsed state, colour toggle) rarely does.
+    const signature = `${this.hudCollapsed ? 1 : 0}|${this.showHeightColor ? 1 : 0}|${windSpeedStr}|${rainRateStr}|${windDir}`;
+    if (this._lastWeatherOverlaySignature === signature) return;
+    this._lastWeatherOverlaySignature = signature;
+
     if (this.hudCollapsed) {
       this.weatherOverlay.innerHTML = `
         <div class="hud-header">
@@ -1935,6 +2032,7 @@ class WeatherFlowLightningCard extends HTMLElement {
   _paintSkyGradient(factor) {
     if (!this._skyCanvas || !this._skyTexture) return;
     const ctx = this._skyCanvas.getContext('2d');
+    if (!ctx) return;
     const h = this._skyCanvas.height;
     const grad = ctx.createLinearGradient(0, 0, 0, h);
 
@@ -2064,9 +2162,17 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (!this.initialized) return;
     this.animationFrameId = requestAnimationFrame(() => this.animateLoop());
 
+    // Frame-rate cap: on high refresh-rate displays (120/144Hz+) rAF fires
+    // far more often than this scene needs. Skip the tick/update/render work
+    // entirely until at least one target frame interval has elapsed so an
+    // idle scene doesn't burn CPU/GPU re-rendering an unchanged frame.
+    const now = Date.now();
+    if (this.lastFrameTime !== null && now - this.lastFrameTime < MIN_FRAME_INTERVAL_MS) {
+      return;
+    }
+
     this.tickPlayback();
 
-    const now = Date.now();
     const deltaTime = this.lastFrameTime ? (now - this.lastFrameTime) / 1000.0 : 0.016;
     this.lastFrameTime = now;
 
@@ -2278,7 +2384,6 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     this.playBtn.addEventListener('click', () => this.togglePlay());
     this.slider.addEventListener('input', (e) => this.handleSliderInput(e));
-    this.slider.addEventListener('change', () => this.handleSliderChange());
     this.speedSelect.addEventListener('change', (e) => {
       this.playbackSpeed = parseFloat((e.target as HTMLSelectElement).value) || 120;
     });
@@ -2294,7 +2399,9 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   tickPlayback() {
     const minTime =
-      this.strikeHistory.length > 0 ? Math.min(Date.now() - 3600000, this.strikeHistory[0].time) : Date.now() - 3600000;
+      this.strikeHistory.length > 0
+        ? Math.min(Date.now() - STRIKE_HISTORY_WINDOW_MS, this.strikeHistory[0].time)
+        : Date.now() - STRIKE_HISTORY_WINDOW_MS;
     const maxTime = Date.now();
 
     if (this.slider) this.slider.disabled = false;
@@ -2339,7 +2446,9 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   togglePlay() {
     const minTime =
-      this.strikeHistory.length > 0 ? Math.min(Date.now() - 3600000, this.strikeHistory[0].time) : Date.now() - 3600000;
+      this.strikeHistory.length > 0
+        ? Math.min(Date.now() - STRIKE_HISTORY_WINDOW_MS, this.strikeHistory[0].time)
+        : Date.now() - STRIKE_HISTORY_WINDOW_MS;
     if (this.playbackMode === 'live') {
       this.playbackMode = 'playback';
       this.isPlaying = true;
@@ -2421,10 +2530,6 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
   }
 
-  handleSliderChange() {
-    // Left empty for potential future hooks on slider release
-  }
-
   checkAndTriggerPlaybackStrikes() {
     this.strikeHistory.forEach((strike) => {
       if (strike.time <= this.playbackTime) {
@@ -2482,6 +2587,19 @@ class WeatherFlowLightningCard extends HTMLElement {
     return paths;
   }
 
+  // Schedules a requestAnimationFrame callback and tracks its id in
+  // this._activeRafIds so cleanupThreeJS() can cancel it on teardown.
+  // Without this, decayFlash/animateSequence chains kept firing after
+  // disconnectedCallback and dereferenced nulled-out THREE objects.
+  _scheduleRaf(callback) {
+    const id = requestAnimationFrame((t) => {
+      this._activeRafIds.delete(id);
+      callback(t);
+    });
+    this._activeRafIds.add(id);
+    return id;
+  }
+
   triggerStrikeAnimation(x, z, stations = []) {
     if (!this.initialized) return;
 
@@ -2507,11 +2625,14 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.ambientLight.intensity = 4.0;
       let flashFrame = 0;
       const decayFlash = () => {
+        // Bail out if the scene was torn down mid-flash — cleanupThreeJS
+        // nulls this.ambientLight and sets this.initialized = false.
+        if (!this.initialized || !this.ambientLight) return;
         flashFrame++;
         this.ambientLight.intensity = Math.max(preFlashIntensity, 4.0 * (1.0 - flashFrame / 8));
-        if (flashFrame < 8) requestAnimationFrame(decayFlash);
+        if (flashFrame < 8) this._scheduleRaf(decayFlash);
       };
-      requestAnimationFrame(decayFlash);
+      this._scheduleRaf(decayFlash);
     }
 
     // [5] Tube geometry bolts — visible at all zoom levels, true 3D volume
@@ -2591,9 +2712,12 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
 
     let progress = 0;
-    const duration = 60;
+    const duration = STRIKE_ANIMATION_DURATION_FRAMES;
 
     const animateSequence = () => {
+      // Bail out if the scene was torn down mid-sequence — cleanupThreeJS
+      // nulls this.strikeLayer and sets this.initialized = false.
+      if (!this.initialized || !this.strikeLayer) return;
       progress++;
       const frac = progress / duration;
 
@@ -2651,38 +2775,83 @@ class WeatherFlowLightningCard extends HTMLElement {
       });
 
       if (progress < duration) {
-        requestAnimationFrame(animateSequence);
+        this._scheduleRaf(animateSequence);
       }
     };
 
-    animateSequence();
+    this._scheduleRaf(animateSequence);
+  }
+
+  // De-dupes a console.warn to fire at most once per distinct condition
+  // instead of on every `hass` state update (which can be several times a
+  // second) — keeps genuinely useful diagnostics without hot-path log spam.
+  _warnOnce(key, ...args) {
+    if (this._warnedKeys.has(key)) return;
+    this._warnedKeys.add(key);
+    console.warn(...args);
+  }
+
+  // Cheap change-detection for the elevation grid: a full JSON.stringify
+  // deep-compare (done twice, every `hass` update) is O(n) string work for
+  // a value that essentially never changes tick-to-tick. Length + a handful
+  // of sampled cells is enough to catch real updates almost for free.
+  _elevationGridChanged(newGrid) {
+    const oldGrid = this.elevationGrid;
+    if (!oldGrid || newGrid.length !== oldGrid.length) return true;
+    const len = newGrid.length;
+    if (len === 0) return false;
+    const sampleIndices = [0, Math.floor(len / 4), Math.floor(len / 2), Math.floor((3 * len) / 4), len - 1];
+    for (const idx of sampleIndices) {
+      if (newGrid[idx] !== oldGrid[idx]) return true;
+    }
+    return false;
   }
 
   set hass(hass) {
     this._hass = hass;
     if (!hass || !this.initialized) return;
 
+    const states = hass.states;
+    const sourceNamespace = 'weatherflow_lightning_trilateration';
+
+    // Single pass over every entity id instead of up to four separate
+    // Object.keys(hass.states) scans per tick (auto-detect the station
+    // sensor, collect per-station strike counts, and collect geo_location
+    // strike entities all at once).
+    let autoDetectedPrimarySensor;
+    let autoDetectedFallbackSensor;
+    const stationStrikeCounts: { stationId: any; count: number }[] = [];
+    const strikeEntityIds: string[] = [];
+
+    const stateKeys = Object.keys(states);
+    for (let i = 0; i < stateKeys.length; i++) {
+      const key = stateKeys[i];
+      const stateObj = states[key];
+      if (key.startsWith('sensor.')) {
+        const attrs = stateObj.attributes;
+        if (attrs.stations !== undefined) {
+          if (!autoDetectedFallbackSensor) autoDetectedFallbackSensor = key;
+          if (!autoDetectedPrimarySensor && key.endsWith('_stations') && attrs.icon === 'mdi:lightning-bolt') {
+            autoDetectedPrimarySensor = key;
+          }
+        }
+        if (attrs.station_id !== undefined) {
+          stationStrikeCounts.push({ stationId: attrs.station_id, count: parseInt(stateObj.state) || 0 });
+        }
+      } else if (key.startsWith('geo_location.') && stateObj.attributes.source === sourceNamespace) {
+        strikeEntityIds.push(key);
+      }
+    }
+
     // Find the station sensor (prefer configured entity, fallback to auto-detection)
     const stationsSensorId =
-      this.config.entity ||
-      this.config.entity_id ||
-      Object.keys(hass.states).find(
-        (key) =>
-          key.startsWith('sensor.') &&
-          key.endsWith('_stations') &&
-          hass.states[key].attributes.stations !== undefined &&
-          hass.states[key].attributes.icon === 'mdi:lightning-bolt'
-      ) ||
-      Object.keys(hass.states).find(
-        (key) => key.startsWith('sensor.') && hass.states[key].attributes.stations !== undefined
-      );
+      this.config.entity || this.config.entity_id || autoDetectedPrimarySensor || autoDetectedFallbackSensor;
 
-    let refLat = hass.config.latitude;
-    let refLon = hass.config.longitude;
-    console.log('WeatherFlow Card: Home coordinates:', refLat, refLon);
+    let refLat = hass.config?.latitude ?? 0;
+    let refLon = hass.config?.longitude ?? 0;
 
     if (stationsSensorId) {
-      const attrs = hass.states[stationsSensorId].attributes;
+      const attrs = states[stationsSensorId].attributes;
       const stationsAttr = attrs.stations;
       if (Array.isArray(stationsAttr)) {
         const primaryStation = stationsAttr.find((st: any) => st.type === 'primary');
@@ -2692,34 +2861,29 @@ class WeatherFlowLightningCard extends HTMLElement {
           if (!isNaN(latVal) && !isNaN(lonVal)) {
             refLat = latVal;
             refLon = lonVal;
-            console.log('WeatherFlow Card: Resolved primary station coordinate:', refLat, refLon);
           } else {
-            console.warn(
+            this._warnOnce(
+              'nan-primary-coords',
               'WeatherFlow Card: Parsed primary station coordinates are NaN:',
               primaryStation.latitude,
               primaryStation.longitude
             );
           }
         } else {
-          console.warn('WeatherFlow Card: No primary station found in stations list:', stationsAttr);
+          this._warnOnce('no-primary-station', 'WeatherFlow Card: No primary station found in stations list.');
         }
       } else {
-        console.warn('WeatherFlow Card: stationsAttr is not an array:', stationsAttr);
+        this._warnOnce('stations-not-array', 'WeatherFlow Card: stations attribute is not an array.');
       }
     } else {
-      console.warn('WeatherFlow Card: stationsSensorId not found');
+      this._warnOnce(
+        'no-stations-sensor',
+        'WeatherFlow Card: No station sensor found — configure `entity` in the card config.'
+      );
     }
 
     // Load/Cache CartoDB Dark Matter map texture
     if (this.lastRefLat !== refLat || this.lastRefLon !== refLon) {
-      console.log(
-        'WeatherFlow Card: Reference coordinates changed from',
-        this.lastRefLat,
-        this.lastRefLon,
-        'to',
-        refLat,
-        refLon
-      );
       this.lastRefLat = refLat;
       this.lastRefLon = refLon;
       this.loadMapTexture(refLat, refLon);
@@ -2731,13 +2895,14 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     if (stationsSensorId) {
+      const attrs = states[stationsSensorId].attributes;
+
       // Process elevation grid updates first
-      const elevationGrid = hass.states[stationsSensorId].attributes.elevation_grid;
-      if (elevationGrid && JSON.stringify(elevationGrid) !== JSON.stringify(this.elevationGrid)) {
+      const elevationGrid = attrs.elevation_grid;
+      if (elevationGrid && this._elevationGridChanged(elevationGrid)) {
         this.updateTerrainGeometry(elevationGrid);
       }
 
-      const attrs = hass.states[stationsSensorId].attributes;
       this.windSpeed = attrs.wind_speed !== undefined ? parseFloat(attrs.wind_speed) : 0.0;
       this.windDirection = attrs.wind_direction !== undefined ? parseFloat(attrs.wind_direction) : 0.0;
       this.solarRadiation = attrs.solar_radiation !== undefined ? parseFloat(attrs.solar_radiation) : 1000.0;
@@ -2750,99 +2915,67 @@ class WeatherFlowLightningCard extends HTMLElement {
       if (!this.lastStationStrikes) {
         this.lastStationStrikes = {};
       }
-      Object.keys(hass.states).forEach((entityId) => {
-        if (entityId.startsWith('sensor.')) {
-          const stateObj = hass.states[entityId];
-          const stationId = stateObj.attributes.station_id;
-          if (stationId !== undefined) {
-            const currentCount = parseInt(stateObj.state) || 0;
-            const prevCount = this.lastStationStrikes[stationId];
-            if (prevCount !== undefined && currentCount > prevCount) {
-              if (this.stationMeshes) {
-                this.stationMeshes.forEach((sm) => {
-                  if (String(sm.mesh.userData.station.id) === String(stationId)) {
-                    sm.strikeIntensity = 1.0;
-                  }
-                });
-              }
+      for (const { stationId, count } of stationStrikeCounts) {
+        const prevCount = this.lastStationStrikes[stationId];
+        if (prevCount !== undefined && count > prevCount && this.stationMeshes) {
+          this.stationMeshes.forEach((sm) => {
+            if (String(sm.mesh.userData.station.id) === String(stationId)) {
+              sm.strikeIntensity = 1.0;
             }
-            this.lastStationStrikes[stationId] = currentCount;
-          }
+          });
         }
-      });
+        this.lastStationStrikes[stationId] = count;
+      }
 
       const stationsAttr = attrs.stations;
 
       if (Array.isArray(stationsAttr)) {
-        let stationsChanged = false;
+        // Compare existing stations to new ones — both membership (id) and
+        // position (lat/lon), so a station that moved gets repositioned
+        // instead of being silently left at its old grid coordinates.
+        let stationsChanged = this.stations.length !== stationsAttr.length;
 
-        // Compare existing stations to new ones
-        if (this.stations.length !== stationsAttr.length) {
-          stationsChanged = true;
-        } else {
-          // Check if any station changed
+        if (!stationsChanged) {
           for (let i = 0; i < stationsAttr.length; i++) {
             const oldSt = this.stations.find((s) => s.id === stationsAttr[i].id);
-            if (!oldSt) {
+            const newLat = parseFloat(stationsAttr[i].latitude);
+            const newLon = parseFloat(stationsAttr[i].longitude);
+            if (!oldSt || oldSt.lat !== newLat || oldSt.lon !== newLon) {
               stationsChanged = true;
               break;
             }
           }
         }
 
-        console.log(
-          'WeatherFlow Card: Stations changed status:',
-          stationsChanged,
-          'Current length:',
-          this.stations.length,
-          'New length:',
-          stationsAttr.length
-        );
-
         if (stationsChanged) {
-          const R = 6371.0;
-          const cosLat = Math.cos((refLat * Math.PI) / 180.0);
-
           this.stations = stationsAttr.map((st) => {
             const lat = parseFloat(st.latitude);
             const lon = parseFloat(st.longitude);
-
-            const gridX = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-            const gridZ = -R * (lat - refLat) * (Math.PI / 180.0);
+            const { x: gridX, z: gridZ } = this._latLonToGrid(lat, lon, refLat, refLon);
 
             let color = 0x64748b; // subtle blue-gray for discovered/public
             if (st.type === 'primary')
               color = 0x10b981; // vibrant emerald green for local/primary
             else if (st.type === 'neighbor') color = 0x38bdf8; // sky blue for neighbors
 
-            console.log(
-              'WeatherFlow Card: Mapped station:',
-              st.id,
-              'type:',
-              st.type,
-              'lat:',
-              lat,
-              'lon:',
-              lon,
-              'to grid coords:',
-              gridX,
-              gridZ
-            );
-
             return {
               id: st.id,
               x: gridX,
               z: gridZ,
+              lat: lat,
+              lon: lon,
               color: color,
               type: st.type
             };
           });
 
-          // Remove old meshes
+          // Remove & fully dispose old meshes (not just scene.remove — the
+          // group's ring/cylinder/sphere geometries & materials would
+          // otherwise leak on every station-list rebuild).
           if (this.stationMeshes) {
-            console.log('WeatherFlow Card: Removing', this.stationMeshes.length, 'old meshes');
             this.stationMeshes.forEach((sm) => {
               this.scene.remove(sm.mesh);
+              this.disposeHierarchy(sm.mesh);
             });
           }
 
@@ -2853,24 +2986,15 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     // Detect lightning strike entities from the trilateration integration
-    const sourceNamespace = 'weatherflow_lightning_trilateration';
-    const strikes = Object.keys(hass.states).filter(
-      (key) => key.startsWith('geo_location.') && hass.states[key].attributes.source === sourceNamespace
-    );
-
-    const R = 6371.0;
-    const cosLat = Math.cos((refLat * Math.PI) / 180.0);
-
     const activeStrikes = [];
-    strikes.forEach((entityId) => {
-      const stateObj = hass.states[entityId];
+    strikeEntityIds.forEach((entityId) => {
+      const stateObj = states[entityId];
       const lat = parseFloat(stateObj.attributes.latitude);
       const lon = parseFloat(stateObj.attributes.longitude);
       const stations = stateObj.attributes.stations || [];
 
       if (!isNaN(lat) && !isNaN(lon)) {
-        const gridX = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-        const gridZ = -R * (lat - refLat) * (Math.PI / 180.0);
+        const { x: gridX, z: gridZ } = this._latLonToGrid(lat, lon, refLat, refLon);
         const time = new Date(stateObj.last_changed).getTime();
         activeStrikes.push({
           id: entityId,

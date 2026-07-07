@@ -192,8 +192,9 @@ def test_process_vector_data_relation_merge(mock_hass, mock_entry):
 def test_station_strikes_tracking(mock_hass, mock_entry):
     coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
 
-    # Set up device-to-station mapping
+    # Set up device-to-station mapping (station must be one this entry monitors)
     coordinator.device_to_station = {"309874": "125048"}
+    coordinator.all_stations.append("125048")
 
     # Mock listener callback
     listener_called = False
@@ -382,6 +383,8 @@ def test_strike_rate_sensor_tracking(mock_hass, mock_entry):
     )
 
     coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    # Device 309874 belongs to the monitored primary station.
+    coordinator.device_to_station = {"309874": "172103"}
     sensor = WeatherFlowStrikeRateSensor(coordinator, mock_entry)
 
     # Initial state
@@ -420,7 +423,9 @@ def test_options_flow_handler(mock_hass, mock_entry):
         "distance_filter": 100.0,
     }
 
-    handler = TempestTrilaterationOptionsFlowHandler(mock_entry)
+    handler = TempestTrilaterationOptionsFlowHandler()
+    # config_entry is provided by the base class in real HA; set it for the test.
+    handler.config_entry = mock_entry
     handler.hass = mock_hass
 
     # Call step_init with user input
@@ -459,3 +464,78 @@ def test_trilateration_status_sensor(mock_hass, mock_entry):
         "Primary (8.0 km)",
         "Neighbor 2 (1.0 km)",
     ]
+
+
+def test_get_station_coords_never_fabricates(mock_hass, mock_entry):
+    """Unresolved neighbour stations return None instead of a fabricated position."""
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    coordinator.all_stations = ["172103", "215396", "81149"]
+    coordinator.station_coords = {}
+
+    # Primary (index 0) falls back to the HA home location (documented approximation).
+    assert coordinator._get_station_coords("172103") == (
+        mock_hass.config.latitude,
+        mock_hass.config.longitude,
+    )
+    # Neighbours without resolved coordinates are excluded, not fabricated.
+    assert coordinator._get_station_coords("215396") is None
+    assert coordinator._get_station_coords("81149") is None
+    # A station configured directly as "lat,lon" is parsed.
+    assert coordinator._get_station_coords("40.0,-75.0") == (40.0, -75.0)
+    # A resolved station returns its real coordinates.
+    coordinator.station_coords["215396"] = (41.0, -76.0)
+    assert coordinator._get_station_coords("215396") == (41.0, -76.0)
+
+
+def test_process_incoming_ignores_foreign_device(mock_hass, mock_entry):
+    """Strikes for devices this entry does not monitor are dropped (shared WS)."""
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    # 999999 maps to no monitored station.
+    message = {"type": "evt_strike", "device_id": 999999, "evt": [1782640276, 17.0, 3848]}
+    coordinator._process_incoming_message(message)
+    assert coordinator.station_strikes == {}
+    assert coordinator.recent_strike_timestamps == []
+
+
+def test_solve_trilateration_collinear(mock_hass, mock_entry):
+    """Stations on a single meridian yield a singular geometry -> 'collinear'."""
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    strike_events = [(40.0, -75.0, 10.0), (40.1, -75.0, 12.0), (40.2, -75.0, 14.0)]
+    lat, lon, status, residual = coordinator._solve_trilateration(strike_events)
+    assert status == "collinear"
+    assert lat is None and lon is None
+
+
+def test_solve_trilateration_out_of_bounds(mock_hass, mock_entry):
+    """A solution outside +/-180 longitude is reported as 'out_of_bounds'."""
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    R = 6371.0
+    target_lat, target_lon = 0.0, 181.0  # beyond the valid longitude range
+    stations = [(0.0, 179.0), (0.5, 179.2), (-0.4, 179.4)]
+
+    def compute_dist(s_lat, s_lon):
+        cos_lat = math.cos(math.radians(s_lat))
+        return R * math.sqrt(
+            (math.radians(target_lon - s_lon) * cos_lat) ** 2
+            + (math.radians(target_lat - s_lat)) ** 2
+        )
+
+    strike_events = [(lat, lon, compute_dist(lat, lon)) for lat, lon in stations]
+    _, _, status, _ = coordinator._solve_trilateration(strike_events)
+    assert status == "out_of_bounds"
+
+
+def test_solve_trilateration_matches_haversine_ground_truth(mock_hass, mock_entry):
+    """Solver recovers a target whose distances come from an independent
+    great-circle (haversine) model, not the solver's own flat projection."""
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    target_lat, target_lon = 40.1, -74.9
+    stations = [(40.0, -75.0), (40.2, -74.8), (40.05, -75.1)]
+    strike_events = [
+        (lat, lon, coordinator._calculate_distance(target_lat, target_lon, lat, lon))
+        for lat, lon in stations
+    ]
+    lat, lon, status, residual = coordinator._solve_trilateration(strike_events)
+    assert status == "success"
+    assert lat == pytest.approx(target_lat, abs=5e-2)
+    assert lon == pytest.approx(target_lon, abs=5e-2)

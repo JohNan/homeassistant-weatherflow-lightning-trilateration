@@ -1,5 +1,7 @@
 """Config flow for WeatherFlow Lightning Trilateration integration."""
 
+import logging
+
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -14,6 +16,8 @@ from .const import (
     DOMAIN,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for WeatherFlow Lightning Trilateration."""
@@ -24,7 +28,7 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         """Get the options flow for this handler."""
-        return TempestTrilaterationOptionsFlowHandler(config_entry)
+        return TempestTrilaterationOptionsFlowHandler()
 
     async def async_step_user(self, user_input=None):
         """Handle the initial step."""
@@ -52,6 +56,9 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[CONF_PRIMARY_STATION] = "empty_primary"
 
             if not errors:
+                # Prevent configuring the same primary station twice.
+                await self.async_set_unique_id(primary)
+                self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
                     data=user_input,
@@ -134,28 +141,37 @@ class TempestTrilaterationConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             session = async_get_clientsession(self.hass)
             async with session.get(url, params=params, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    stations = data.get("stations", [])
-                    for station in stations:
-                        station_id = str(station.get("station_id", ""))
-                        devices = station.get("devices", [])
-                        for device in devices:
-                            dev_serial = str(device.get("serial_number", ""))
-                            if serial in dev_serial or dev_serial in serial:
-                                return station_id
-        except Exception:
-            pass
+                if response.status != 200:
+                    _LOGGER.debug(
+                        "Serial resolution failed: stations endpoint returned HTTP %d",
+                        response.status,
+                    )
+                    return None
+                data = await response.json()
+                stations = data.get("stations", [])
+                for station in stations:
+                    station_id = str(station.get("station_id", ""))
+                    for device in station.get("devices", []):
+                        dev_serial = str(device.get("serial_number", ""))
+                        dev_id = str(device.get("device_id", ""))
+                        # Match on the numeric device_id or the full serial (optionally
+                        # with a leading "ST-"/"HB-" prefix stripped). A loose substring
+                        # test could resolve to the wrong station.
+                        stripped = dev_serial.split("-")[-1]
+                        if serial in (dev_id, dev_serial, stripped):
+                            return station_id
+        except Exception as e:
+            _LOGGER.warning("Error resolving serial %s to a station: %s", serial, e)
 
         return None
 
 
 class TempestTrilaterationOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options flow for the WeatherFlow Lightning Trilateration integration."""
+    """Handle options flow for the WeatherFlow Lightning Trilateration integration.
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
+    ``config_entry`` is provided by the base class; assigning it in ``__init__``
+    is deprecated in modern Home Assistant.
+    """
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""

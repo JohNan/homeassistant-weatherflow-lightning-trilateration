@@ -2,3 +2,9 @@
 # GitHub will collapse diffs for it and linguist won't count it as source.
 # Source of truth: src/weatherflow-lightning-card.ts
 custom_components/weatherflow_lightning_trilateration/dist/weatherflow-lightning-card.js linguist-generated=true
+
+# Vendored third-party library (three.js r128, minified). Not written by this
+# project and never hand-edited, so mark it both generated and vendored: GitHub
+# collapses diffs for it, excludes it from language stats, and it won't be
+# suggested in code review.
+custom_components/weatherflow_lightning_trilateration/dist/three.min.js linguist-generated=true linguist-vendored=true

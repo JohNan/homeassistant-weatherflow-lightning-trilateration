@@ -6,7 +6,15 @@
     "lib": ["DOM", "ES2022"],
     "allowJs": true,
     "strict": false,
+    // TODO: tighten — enabling noImplicitAny surfaces ~123 errors (the card
+    // uses a `[key: string]: any` index signature throughout and largely
+    // untyped method params/DOM callbacks). Needs an incremental typing pass
+    // before this can be turned on without a huge one-off diff.
     "noImplicitAny": false,
+    // TODO: tighten — enabling strictNullChecks surfaces ~70 errors, mostly
+    // from untyped DOM APIs (getContext, getElementById, etc.) and optional
+    // config fields flowing through the untyped `this`. Needs the same
+    // incremental typing pass as noImplicitAny above.
     "strictNullChecks": false,
     "esModuleInterop": true,
     "skipLibCheck": true,

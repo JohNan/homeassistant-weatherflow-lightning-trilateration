@@ -26,5 +26,18 @@ exclude = [
 ]
 
 [tool.ruff.lint]
+# "I" (isort rules) is kept enabled even though tool.isort also runs in CI;
+# they agree on the same profile/line-length so this is redundant-but-harmless
+# belt-and-braces rather than a conflict.
 select = ["E", "F", "W", "I"]
+# E501 (line-too-long) is intentionally left to Black, which already enforces
+# line-length = 100 as the single source of truth for wrapping. Ruff's E501
+# check is purely presence/absence (it doesn't reformat), so enabling it here
+# would only duplicate what `black --check` already reports without fixing
+# anything ruff itself can act on.
 ignore = ["E501"]
+
+[tool.pytest.ini_options]
+# Keep collection deterministic: only look under tests/, never pick up
+# root-level developer scripts (e.g. scripts/weatherflow_integration_cli.py).
+testpaths = ["tests"]

@@ -40,6 +40,12 @@ async def async_setup_entry(
 class WeatherFlowTrilaterationSensor(SensorEntity):
     """Representation of a WeatherFlow Lightning Trilateration Sensor."""
 
+    _attr_should_poll = False
+    # The elevation grid (225 points) and stations list are large and change
+    # with telemetry; keep them out of the recorder DB. They remain in the live
+    # state so the Lovelace card can read them.
+    _unrecorded_attributes = frozenset({"elevation_grid", "stations"})
+
     def __init__(self, coordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         self._coordinator = coordinator
@@ -56,9 +62,7 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
     @property
     def state(self) -> int:
         """Return the state of the sensor (count of configured/discovered stations)."""
-        count = len(self._coordinator.all_stations)
-        _LOGGER.debug("WeatherFlowTrilaterationSensor state queried: %d stations", count)
-        return count
+        return len(self._coordinator.all_stations)
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -95,29 +99,22 @@ class WeatherFlowTrilaterationSensor(SensorEntity):
             "solar_radiation": self._coordinator.solar_radiation,
             "rain_rate": self._coordinator.rain_rate,
         }
-        _LOGGER.debug("WeatherFlowTrilaterationSensor attributes queried: %s", attrs)
         return attrs
 
     async def async_added_to_hass(self) -> None:
         """Call when entity is added to hass."""
-        _LOGGER.debug(
-            "WeatherFlowTrilaterationSensor successfully added to HASS: unique_id=%s",
-            self.unique_id,
-        )
         self._coordinator.async_add_listener(self.async_write_ha_state)
 
     async def async_will_remove_from_hass(self) -> None:
         """Call when entity will be removed from HASS."""
         self._coordinator.async_remove_listener(self.async_write_ha_state)
 
-    async def async_update(self) -> None:
-        """Update the sensor."""
-        # The coordinator updates its internal lists, this method triggers a state refresh
-        pass
-
 
 class WeatherFlowStationStrikesSensor(SensorEntity):
     """Representation of a WeatherFlow Station Lightning Strike Sensor."""
+
+    _attr_should_poll = False
+    _attr_state_class = "total_increasing"
 
     def __init__(self, coordinator, entry: ConfigEntry, station_id: str) -> None:
         """Initialize the sensor."""
@@ -165,6 +162,9 @@ class WeatherFlowStationStrikesSensor(SensorEntity):
 class WeatherFlowStrikeRateSensor(SensorEntity):
     """Representation of a WeatherFlow Strike Rate Sensor (Strikes per Minute)."""
 
+    _attr_should_poll = False
+    _attr_state_class = "measurement"
+
     def __init__(self, coordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
         self._coordinator = coordinator
@@ -193,14 +193,12 @@ class WeatherFlowStrikeRateSensor(SensorEntity):
         """Call when entity will be removed from HASS."""
         self._coordinator.async_remove_listener(self.async_write_ha_state)
 
-    async def async_update(self) -> None:
-        """Update the sensor."""
-        # The coordinator updates its internal lists, this method triggers a state refresh
-        pass
-
 
 class WeatherFlowTrilaterationStatusSensor(SensorEntity):
     """Sensor showing the status of the last trilateration calculation attempt."""
+
+    _attr_should_poll = False
+    _unrecorded_attributes = frozenset({"reporting_stations"})
 
     def __init__(self, coordinator, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
@@ -236,7 +234,3 @@ class WeatherFlowTrilaterationStatusSensor(SensorEntity):
     async def async_will_remove_from_hass(self) -> None:
         """Call when entity will be removed from HASS."""
         self._coordinator.async_remove_listener(self.async_write_ha_state)
-
-    async def async_update(self) -> None:
-        """Update the sensor."""
-        pass

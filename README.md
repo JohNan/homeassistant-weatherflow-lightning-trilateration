@@ -4,6 +4,7 @@
 [![Hassfest](https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration/actions/workflows/hassfest.yaml)
 [![HACS Validation](https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration/actions/workflows/hacs.yaml/badge.svg)](https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration/actions/workflows/hacs.yaml)
 [![Linting](https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration/actions/workflows/lint.yaml/badge.svg)](https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration/actions/workflows/lint.yaml)
+[![Tests](https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration/actions/workflows/test.yaml/badge.svg)](https://github.com/JohNan/homeassistant-weatherflow-lightning-trilateration/actions/workflows/test.yaml)
 
 A native Home Assistant custom integration that connects to the WeatherFlow Tempest WebSocket API, listens for lightning strikes across multiple weather stations, and trilaterates the geographic strike location in real time. Calculated strikes are plotted directly on the Home Assistant map.
 
@@ -41,21 +42,42 @@ A native Home Assistant custom integration that connects to the WeatherFlow Temp
 .github/workflows/
 ├── hacs.yaml            # HACS repository validation
 ├── hassfest.yaml        # Home Assistant code structure validation
-└── lint.yaml            # Code linting (Ruff/Black/Isort)
+├── lint.yaml            # Python code linting (Ruff/Black/Isort)
+└── test.yaml            # Python unit tests (pytest)
 custom_components/weatherflow_lightning_trilateration/
 ├── __init__.py          # Life-cycle hooks, coordinator, and services
 ├── config_flow.py       # Integration setup flow UI logic & auto-discovery
 ├── const.py             # Centralized constant definitions
 ├── dist/
-│   └── weatherflow-lightning-card.js   # 3D WebGL Lovelace Custom Card
+│   ├── weatherflow-lightning-card.js   # 3D WebGL Lovelace Custom Card (GENERATED, see below)
+│   └── three.min.js                    # Vendored three.js runtime (GENERATED/vendored, see below)
 ├── geo_location.py      # GeolocationEvent entities for map plotting
 ├── manifest.json        # Integration manifest metadata
 ├── services.yaml        # Field definitions for simulate_* and replay_strikes services
 └── translations/
     └── en.json          # English translation strings for Setup UI
+scripts/
+└── weatherflow_integration_cli.py   # Manual dev CLI: WebSocket monitor & trilateration simulation
+src/
+└── weatherflow-lightning-card.ts    # TypeScript SOURCE for the Lovelace card (see below)
+tests/
+└── test_trilateration.py            # Pytest unit tests (mocks Home Assistant)
+.gitattributes          # Marks generated/vendored dist/ files so GitHub collapses their diffs
+.prettierrc              # Prettier formatting rules for src/*.ts
+eslint.config.js         # ESLint rules for src/*.ts
 hacs.json                # HACS configuration properties
-mise.toml                # Developer environment task orchestrator (linting, JSON, and JS syntax checks)
+mise.toml                # Developer environment task orchestrator (lint, JSON, JS, and test tasks)
+package.json             # Lovelace card build tooling (esbuild/eslint/prettier/tsc) & npm scripts
+pyproject.toml           # Python tool configuration (Black/Ruff/isort/pytest)
+tsconfig.json            # TypeScript compiler options for src/*.ts
 ```
+
+**`dist/weatherflow-lightning-card.js` is generated.** It is produced from
+`src/weatherflow-lightning-card.ts` by running `npm run build` (esbuild bundles
+and minifies the TypeScript source). Do not hand-edit the file in `dist/` —
+edit `src/weatherflow-lightning-card.ts` and rebuild. See
+["three.js provenance"](#threejs-provenance) below for the vendored
+`dist/three.min.js` runtime the card depends on.
 
 ---
 
@@ -114,6 +136,23 @@ To visually test the entire mapping and 3D animation stack without waiting for a
 4. Click **Call Service**.
 5. Check your Home Assistant map card to view the lightning strike marker, and open your custom Lovelace card to view the real-time 3D lightning flash and expanding trilateration ring intersection animation.
 
+### Standalone Developer CLI
+`scripts/weatherflow_integration_cli.py` is a standalone manual test tool (not run by pytest, not part of any CI job) for exercising the WeatherFlow WebSocket API and trilateration math outside of Home Assistant:
+
+```sh
+# Monitor real-time telemetry/strikes for the hardcoded STATIONS map in the script
+export WEATHERFLOW_API_TOKEN=your-personal-access-token
+python3 scripts/weatherflow_integration_cli.py --mode monitor
+
+# Or pass the token directly (avoid shell history leaking real tokens where possible)
+python3 scripts/weatherflow_integration_cli.py --mode monitor --token your-personal-access-token
+
+# Run an offline trilateration simulation (no token/network needed)
+python3 scripts/weatherflow_integration_cli.py --mode simulate
+```
+
+A WeatherFlow developer token is required for `--mode monitor`, via `--token` or the `WEATHERFLOW_API_TOKEN` environment variable — there is no built-in default token. (An earlier version of this script had a real token hardcoded as a default; that token was committed to git history and has been removed here, but must still be rotated/revoked by the maintainer in the Tempest Web App.)
+
 ---
 
 ## Backfilling & Replaying Strikes
@@ -146,12 +185,24 @@ A strike location is only accepted when the computed position actually agrees wi
 
 ## Troubleshooting & FAQs
 
+### Minimum Home Assistant Version
+The integration itself (per `hacs.json`) requires **Home Assistant 2024.10.0** or newer — that is the real minimum to install and run it. One optional cosmetic feature has a much newer requirement, see below.
+
 ### The Integration Icon/Logo is Not Loading
-* **Home Assistant Version Requirement**: Local branding folders (where custom integrations serve their own brand icons locally) require **Home Assistant 2026.3** or newer. If you are running an older version, Home Assistant will fall back to querying the Home Assistant Brands CDN (which will return a 404 since this is a custom integration).
+* **Home Assistant Version Requirement**: This is unrelated to the 2024.10.0 minimum above. Local branding folders (where custom integrations serve their own brand icons locally, instead of relying on the community Home Assistant Brands repository) require **Home Assistant 2026.3** or newer. If you are running an older-but-still-supported version (>= 2024.10.0 and < 2026.3), Home Assistant will fall back to querying the Home Assistant Brands CDN, which will return a 404 for this repository since it isn't published there. This only affects whether the icon renders — it does not prevent the integration from working.
 * **Caching Issues**: If you are on Home Assistant 2026.3+ and the icon still does not load, the browser has cached the missing brand image. Perform a hard refresh to force reload the brand assets (e.g. `Ctrl + F5` on Windows/Linux or `Cmd + Shift + R` on macOS).
 
 ### Custom Element Not Found: weatherflow-lightning-card
 * **Automatic Resource Registration**: The integration automatically registers the Lovelace card resource `/weatherflow_lightning_trilateration/weatherflow-lightning-card.js` on startup. If you see this error, ensure the integration has fully loaded and then perform a hard refresh in your browser to reload the resources.
+
+---
+
+## three.js Provenance
+The 3D WebGL dashboard card depends on [three.js](https://threejs.org/), vendored directly as a minified blob at `custom_components/weatherflow_lightning_trilateration/dist/three.min.js` (loaded via a plain `<script>` tag; the card source in `src/weatherflow-lightning-card.ts` refers to it through the `THREE` global, not an ES module import).
+
+- **Vendored version:** `r128` (three.js `0.128.0`, per the `REVISION` string embedded in the minified file and its `Copyright 2010-2021 Three.js Authors` header). This is pinned as a documentation/provenance reference in `package.json`'s `devDependencies` (`"three": "0.128.0"`) even though nothing in the build actually imports the npm `three` package — the build only ever writes the card bundle to `dist/`, it does not touch `dist/three.min.js`.
+- **Updating it:** there is no automated build step for this file. To upgrade, download the matching minified `build/three.min.js` from the desired [three.js release](https://github.com/mrdoob/three.js/releases), replace the vendored file, update the pinned version in `package.json`, and update this section.
+- **`@types/three`** in `package.json` is currently pinned to a much newer `^0.184.1`, which does not match the vendored `0.128.0` runtime. In practice this doesn't cause type-checking errors today because `src/weatherflow-lightning-card.ts` declares `THREE` as `any` rather than importing types from the `three` package — but if that ever changes, `@types/three` should be pinned down to match `0.128.0` first.
 
 ---
 

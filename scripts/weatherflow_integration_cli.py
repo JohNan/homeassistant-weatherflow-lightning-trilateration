@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
-"""Standalone test script for WeatherFlow Tempest WebSocket integration.
+"""Standalone manual CLI tool for the WeatherFlow Tempest WebSocket integration.
 
 Allows monitoring real-time telemetry from specified stations or simulating
-strike events to test trilateration calculations.
+strike events to test trilateration calculations. This is a developer utility,
+not an automated test, and is not collected by pytest (see tests/ instead).
+
+SECURITY NOTE: an earlier revision of this script (when it lived at
+`test_weatherflow_integration.py`) had a real WeatherFlow developer token
+hardcoded as a default value (`DEFAULT_TOKEN`). That token was committed to
+git history and MUST be treated as compromised: the maintainer needs to
+rotate/revoke it in the Tempest Web App (Settings > Data Authorizations)
+regardless of any other changes made here. This script no longer accepts a
+hardcoded default; a token must be supplied explicitly via `--token` or the
+`WEATHERFLOW_API_TOKEN` environment variable.
 """
 
 import argparse
@@ -10,6 +20,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import sys
 
 import websockets
@@ -23,7 +34,6 @@ logging.basicConfig(
 _LOGGER = logging.getLogger(__name__)
 
 # Constants
-DEFAULT_TOKEN = "cf963a54-46f1-4ef6-bcf6-e96eed0d5138"
 WS_ENDPOINT = "wss://ws.weatherflow.com/swd/data"
 
 # Station mappings
@@ -231,15 +241,25 @@ def main():
     )
     parser.add_argument(
         "--token",
-        default=DEFAULT_TOKEN,
-        help="WeatherFlow developer token for WebSocket monitoring.",
+        default=None,
+        help=(
+            "WeatherFlow developer token for WebSocket monitoring. Falls back to the "
+            "WEATHERFLOW_API_TOKEN environment variable if not provided. Required for "
+            "--mode monitor."
+        ),
     )
 
     args = parser.parse_args()
 
     if args.mode == "monitor":
+        token = args.token or os.environ.get("WEATHERFLOW_API_TOKEN")
+        if not token:
+            parser.error(
+                "A WeatherFlow API token is required for monitor mode. "
+                "Pass --token or set the WEATHERFLOW_API_TOKEN environment variable."
+            )
         try:
-            asyncio.run(run_monitor(args.token))
+            asyncio.run(run_monitor(token))
         except KeyboardInterrupt:
             _LOGGER.info("Execution interrupted by user.")
     elif args.mode == "simulate":

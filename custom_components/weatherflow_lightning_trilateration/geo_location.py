@@ -14,15 +14,12 @@ from .const import CONF_NAME, STRIKE_MARKER_TTL_SEC
 
 _LOGGER = logging.getLogger(__name__)
 
-_ADD_ENTITIES_CALLBACKS = []
 STORAGE_KEY_PREFIX = "weatherflow_lightning_trilateration.strikes"
 STORAGE_VERSION = 1
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
     """Set up the geo_location platform for WeatherFlow Lightning Trilateration."""
-    _ADD_ENTITIES_CALLBACKS.append(async_add_entities)
-
     instance_name = str(entry.data.get(CONF_NAME, entry.entry_id[:8])).strip()
 
     # Initialize strike storage
@@ -86,13 +83,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         entity = WeatherFlowLightningStrikeEntity(
             latitude, longitude, timestamp, remaining, storage, instance_name, stations
         )
-        for add_callback in _ADD_ENTITIES_CALLBACKS:
-            add_callback([entity])
+        # Add only to this entry's platform; a module-global callback list would
+        # duplicate the marker across every config entry.
+        async_add_entities([entity])
 
     remove_listener = hass.bus.async_listen(event_key(entry.entry_id), _handle_strike_event)
     entry.async_on_unload(remove_listener)
-
-    entry.async_on_unload(lambda: _ADD_ENTITIES_CALLBACKS.remove(async_add_entities))
 
 
 class WeatherFlowStrikeStorage:
@@ -122,7 +118,9 @@ class WeatherFlowStrikeStorage:
             for s in self.strikes
         )
 
-    def add_strike(self, latitude: float, longitude: float, timestamp: float, stations: list = None) -> None:
+    def add_strike(
+        self, latitude: float, longitude: float, timestamp: float, stations: list = None
+    ) -> None:
         """Add a strike and schedule save."""
         self.strikes.append(
             {
@@ -140,10 +138,11 @@ class WeatherFlowStrikeStorage:
         self._schedule_save()
 
     def _schedule_save(self) -> None:
-        """Schedule serialization of active strikes."""
+        """Schedule a coalesced serialization of active strikes."""
         current_time = time.time()
         self.strikes = [s for s in self.strikes if current_time - s["time"] < STRIKE_MARKER_TTL_SEC]
-        self.hass.async_create_task(self.async_save())
+        # Coalesce bursts of adds/removes (e.g. during a storm) into one write.
+        self.store.async_delay_save(lambda: {"strikes": self.strikes}, 5)
 
 
 class WeatherFlowLightningStrikeEntity(GeolocationEvent):
@@ -170,6 +169,7 @@ class WeatherFlowLightningStrikeEntity(GeolocationEvent):
         self.remaining_time = remaining_time
         self.storage = storage
         self.stations = stations or []
+        self._expiry_unsub = None
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -210,7 +210,16 @@ class WeatherFlowLightningStrikeEntity(GeolocationEvent):
 
         @callback
         def _remove(now):
+            self._expiry_unsub = None
             self.storage.remove_strike(self.timestamp)
             self.hass.async_create_task(self.async_remove())
 
-        async_call_later(self.hass, self.remaining_time, _remove)
+        self._expiry_unsub = async_call_later(self.hass, self.remaining_time, _remove)
+        self.async_on_remove(self._cancel_expiry)
+
+    @callback
+    def _cancel_expiry(self) -> None:
+        """Cancel the pending expiry timer if the entity is removed early."""
+        if self._expiry_unsub is not None:
+            self._expiry_unsub()
+            self._expiry_unsub = None

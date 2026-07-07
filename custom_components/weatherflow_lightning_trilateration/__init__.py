@@ -19,7 +19,12 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
-from websockets.connection import State as WsState
+
+try:
+    # websockets >= 14 moved State here; older releases expose it under .connection
+    from websockets.protocol import State as WsState
+except ImportError:  # pragma: no cover - depends on installed websockets version
+    from websockets.connection import State as WsState
 
 from .const import (
     CONF_API_TOKEN,
@@ -30,9 +35,14 @@ from .const import (
     DOMAIN,
     EVENT_STRIKE_CALCULATED,
     MAX_TRILATERATION_RESIDUAL_KM,
+    MIN_STATIONS_FOR_TRILATERATION,
     RAW_STRIKE_RETENTION_SEC,
     STORAGE_KEY_RAW_STRIKES,
     STORAGE_VERSION,
+    STRIKE_BUCKET_MAX_AGE_SEC,
+    STRIKE_BUCKET_SETTLE_SEC,
+    STRIKE_BUCKET_TOLERANCE_SEC,
+    VECTOR_CACHE_TTL_SEC,
     WS_ENDPOINT,
 )
 
@@ -50,7 +60,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = TempestStrikeCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    coordinator.start_websocket_listener()
+    # Resolve station metadata before platforms create per-station sensors.
+    await coordinator.async_prepare()
 
     # Register service for strike simulation
     async def async_simulate_strike(service_call) -> None:
@@ -297,6 +308,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Forwarding config entry setups to platforms: ['geo_location', 'sensor']")
     await hass.config_entries.async_forward_entry_setups(entry, ["geo_location", "sensor"])
 
+    # Start streaming only after entities exist so early messages have listeners.
+    coordinator.start_websocket_listener()
+
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     return True
@@ -311,17 +325,26 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, ["geo_location", "sensor"])
     if unload_ok:
-        coordinator = hass.data[DOMAIN].pop(entry.entry_id)
-        await coordinator.async_stop()
+        coordinator = hass.data[DOMAIN].pop(entry.entry_id, None)
+        if coordinator is not None:
+            await coordinator.async_stop()
 
-        # Unregister service if there are no more active entries for DOMAIN
+        # Remove services once no entries remain. The static path and HTTP view
+        # registered under "_infra_registered" cannot be cleanly unregistered,
+        # so that flag is intentionally left set to avoid re-registration errors
+        # on a subsequent setup.
         active_coordinators = [
-            v for k, v in hass.data[DOMAIN].items() if k not in ("_infra_registered", "_shared_ws")
+            v for v in hass.data[DOMAIN].values() if isinstance(v, TempestStrikeCoordinator)
         ]
         if not active_coordinators:
-            hass.data[DOMAIN]["_infra_registered"] = False
-            if hass.services.has_service(DOMAIN, "simulate_strike"):
-                hass.services.async_remove(DOMAIN, "simulate_strike")
+            for service in (
+                "simulate_strike",
+                "simulate_weather",
+                "simulate_storm",
+                "replay_strikes",
+            ):
+                if hass.services.has_service(DOMAIN, service):
+                    hass.services.async_remove(DOMAIN, service)
     return unload_ok
 
 
@@ -377,67 +400,57 @@ class SharedWebSocketSession:
         if self.api_token in _shared_ws:
             del _shared_ws[self.api_token]
 
-    async def _send_listen_start_for_coordinator(
-        self, coordinator: "TempestStrikeCoordinator"
+    async def _send_subscription_for_coordinator(
+        self, coordinator: "TempestStrikeCoordinator", *, start: bool
     ) -> None:
-        """Send listen_start commands for all devices of a coordinator."""
+        """Send listen_start or listen_stop commands for a coordinator's devices."""
         if not self._websocket or self._websocket.state != WsState.OPEN:
             return
+
+        obs_type = "listen_start" if start else "listen_stop"
+        rapid_type = "listen_rapid_start" if start else "listen_rapid_stop"
+        id_prefix = "sub" if start else "unsub"
+        verb = "Subscribed to" if start else "Unsubscribed from"
 
         for device_id in coordinator.device_ids:
             if not device_id.strip().isdigit():
                 continue
-            sub_msg = {
-                "type": "listen_start",
-                "device_id": int(device_id),
-                "id": f"sub_{device_id}",
-            }
-            rapid_sub_msg = {
-                "type": "listen_rapid_start",
-                "device_id": int(device_id),
-                "id": f"sub_rapid_{device_id}",
-            }
-            try:
-                await self._websocket.send(json.dumps(sub_msg))
-                _LOGGER.info("Subscribed to device: %s via shared WS", device_id)
-            except Exception as e:
-                _LOGGER.error("Failed to send listen_start for %s: %s", device_id, e)
-            try:
-                await self._websocket.send(json.dumps(rapid_sub_msg))
-                _LOGGER.info("Subscribed to rapid wind for device: %s via shared WS", device_id)
-            except Exception as e:
-                _LOGGER.error("Failed to send listen_rapid_start for %s: %s", device_id, e)
+            messages = (
+                (
+                    {
+                        "type": obs_type,
+                        "device_id": int(device_id),
+                        "id": f"{id_prefix}_{device_id}",
+                    },
+                    "",
+                ),
+                (
+                    {
+                        "type": rapid_type,
+                        "device_id": int(device_id),
+                        "id": f"{id_prefix}_rapid_{device_id}",
+                    },
+                    "rapid wind for ",
+                ),
+            )
+            for msg, label in messages:
+                try:
+                    await self._websocket.send(json.dumps(msg))
+                    _LOGGER.debug("%s %sdevice %s via shared WS", verb, label, device_id)
+                except Exception as e:
+                    _LOGGER.error("Failed to send %s for %s: %s", msg["type"], device_id, e)
+
+    async def _send_listen_start_for_coordinator(
+        self, coordinator: "TempestStrikeCoordinator"
+    ) -> None:
+        """Send listen_start commands for all devices of a coordinator."""
+        await self._send_subscription_for_coordinator(coordinator, start=True)
 
     async def _send_listen_stop_for_coordinator(
         self, coordinator: "TempestStrikeCoordinator"
     ) -> None:
         """Send listen_stop commands for all devices of a coordinator."""
-        if not self._websocket or self._websocket.state != WsState.OPEN:
-            return
-
-        for device_id in coordinator.device_ids:
-            if not device_id.strip().isdigit():
-                continue
-            sub_msg = {
-                "type": "listen_stop",
-                "device_id": int(device_id),
-                "id": f"unsub_{device_id}",
-            }
-            rapid_unsub_msg = {
-                "type": "listen_rapid_stop",
-                "device_id": int(device_id),
-                "id": f"unsub_rapid_{device_id}",
-            }
-            try:
-                await self._websocket.send(json.dumps(sub_msg))
-                _LOGGER.info("Unsubscribed from device: %s via shared WS", device_id)
-            except Exception as e:
-                _LOGGER.error("Failed to send listen_stop for %s: %s", device_id, e)
-            try:
-                await self._websocket.send(json.dumps(rapid_unsub_msg))
-                _LOGGER.info("Unsubscribed from rapid wind for device: %s via shared WS", device_id)
-            except Exception as e:
-                _LOGGER.error("Failed to send listen_rapid_stop for %s: %s", device_id, e)
+        await self._send_subscription_for_coordinator(coordinator, start=False)
 
     async def _async_listen_loop(self) -> None:
         """Handle the infinite WebSocket connection loop."""
@@ -458,7 +471,13 @@ class SharedWebSocketSession:
                     "Connecting to shared Tempest WebSocket: %s",
                     ws_url.replace(self.api_token, "***") if self.api_token else ws_url,
                 )
-                async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
+                async with websockets.connect(
+                    ws_url,
+                    ssl=ssl_context,
+                    open_timeout=15,
+                    ping_interval=20,
+                    ping_timeout=20,
+                ) as websocket:
                     self._websocket = websocket
                     retry_delay = 5
 
@@ -470,7 +489,7 @@ class SharedWebSocketSession:
                         if not self._running:
                             break
                         try:
-                            _LOGGER.info("Shared WebSocket message received: %s", message)
+                            _LOGGER.debug("Shared WebSocket message received: %s", message)
                             message_data = json.loads(message)
                             self._dispatch(message_data)
                         except json.JSONDecodeError:
@@ -573,13 +592,9 @@ class TempestStrikeCoordinator:
             update_callback()
 
     def start_websocket_listener(self) -> None:
-        """Start the WebSocket listener task."""
-        # We launch the setup as a background task, which will then register with the shared session
+        """Register with the shared WebSocket session (metadata already resolved)."""
         self._running = True
-        self._listener_task = self.hass.async_create_background_task(
-            self._async_setup_and_register(),
-            name=f"weatherflow_trilateration_setup_{self.instance_name}_{self.entry.entry_id}",
-        )
+        self._register_with_shared_session()
 
     def _detect_local_stations(self) -> list[str]:
         """Detect local weather station IDs from official integrations."""
@@ -1076,11 +1091,14 @@ class TempestStrikeCoordinator:
             f"custom_components/weatherflow_lightning_trilateration/{cache_filename}"
         )
 
-        if os.path.exists(cache_path):
-            mtime = os.path.getmtime(cache_path)
-            if time.time() - mtime < 604800:  # 7 days
-                _LOGGER.info("Using cached OSM vector data")
-                return
+        def _cache_is_fresh() -> bool:
+            if not os.path.exists(cache_path):
+                return False
+            return (time.time() - os.path.getmtime(cache_path)) < VECTOR_CACHE_TTL_SEC
+
+        if await self.hass.async_add_executor_job(_cache_is_fresh):
+            _LOGGER.debug("Using cached OSM vector data")
+            return
 
         radius = 15000
         query = f"""
@@ -1107,7 +1125,7 @@ class TempestStrikeCoordinator:
 
         for url in urls:
             try:
-                _LOGGER.info("Querying OSM Overpass API for vector data from %s...", url)
+                _LOGGER.debug("Querying OSM Overpass API for vector data from %s...", url)
                 async with session.post(
                     url, data={"data": query}, headers=headers, timeout=30
                 ) as response:
@@ -1131,7 +1149,7 @@ class TempestStrikeCoordinator:
                                 json.dump(processed, f, ensure_ascii=False, indent=2)
 
                         await self.hass.async_add_executor_job(_write_cache)
-                        _LOGGER.info("Successfully fetched and cached vector data from %s", url)
+                        _LOGGER.debug("Successfully fetched and cached vector data from %s", url)
                         success = True
                         break
                     else:
@@ -1275,13 +1293,25 @@ class TempestStrikeCoordinator:
                 pass
             self._listener_task = None
 
+        # Cancel any pending strike-bucket timers so they don't fire after stop.
+        for timer in list(self._strike_timers.values()):
+            timer()
+        self._strike_timers.clear()
+        self.strike_buffer.clear()
+
         _shared_ws = self.hass.data[DOMAIN].get("_shared_ws", {})
         shared_session = _shared_ws.get(self.api_token)
         if shared_session:
             await shared_session.deregister(self)
 
-    async def _async_setup_and_register(self) -> None:
-        """Setup metadata and register with shared websocket session."""
+    async def async_prepare(self) -> None:
+        """Resolve station metadata before entities are created.
+
+        This is awaited during ``async_setup_entry`` so the sensor platform
+        sees the final ``all_stations`` list (including discovered/renamed
+        stations) when it creates per-station sensors, avoiding a race that
+        otherwise leaves those sensors reading a stale/renamed key forever.
+        """
         # Restore persisted raw strike observations for backfill/replay
         try:
             stored = await self._raw_strike_store.async_load()
@@ -1293,11 +1323,11 @@ class TempestStrikeCoordinator:
 
         # Detect local weather stations from official and other WeatherFlow integrations
         local_stations = self._detect_local_stations()
-        _LOGGER.info("Detected local weather stations: %s", local_stations)
+        _LOGGER.debug("Detected local weather stations: %s", local_stations)
         for station in local_stations:
             if station not in self.all_stations:
                 self.all_stations.append(station)
-                _LOGGER.info("Added local weather station %s to calculations", station)
+                _LOGGER.debug("Added local weather station %s to calculations", station)
 
         # Discover nearby public stations first
         try:
@@ -1305,7 +1335,7 @@ class TempestStrikeCoordinator:
             for station in nearby_stations:
                 if station not in self.all_stations:
                     self.all_stations.append(station)
-                    _LOGGER.info("Added nearby public station %s to calculations", station)
+                    _LOGGER.debug("Added nearby public station %s to calculations", station)
         except Exception as e:
             _LOGGER.exception("Failed to discover nearby public stations: %s", e)
 
@@ -1315,6 +1345,8 @@ class TempestStrikeCoordinator:
         except Exception as e:
             _LOGGER.exception("Failed to resolve station metadata: %s", e)
 
+    def _register_with_shared_session(self) -> None:
+        """Register this coordinator with the (shared) WebSocket session."""
         _shared_ws = self.hass.data[DOMAIN].setdefault("_shared_ws", {})
         shared_session = _shared_ws.get(self.api_token)
         if not shared_session:
@@ -1324,42 +1356,45 @@ class TempestStrikeCoordinator:
         shared_session.register(self)
 
     def _get_station_coords(self, device_id: str):
-        """Retrieve coordinates for a specific station ID."""
+        """Return the real coordinates for a station, or ``None`` if unknown.
+
+        This never fabricates a position. A station whose true location could
+        not be resolved (via the REST API or an explicit ``"lat,lon"`` config
+        value) is reported as ``None`` so the caller can exclude it from
+        trilateration. Fabricating a position and pairing it with the station's
+        real reported strike distance produces a geometrically meaningless fix.
+        """
         if device_id in self.station_coords:
             return self.station_coords[device_id]
 
-        # 1. Resolve primary station coordinate reference
-        ref_lat = self.hass.config.latitude
-        ref_lon = self.hass.config.longitude
-
-        primary_station = self.all_stations[0]
-        if "," in primary_station:
+        # A station may be configured directly as a "lat,lon" coordinate string.
+        if "," in device_id:
             try:
-                parts = primary_station.split(",")
-                ref_lat = float(parts[0])
-                ref_lon = float(parts[1])
-            except ValueError:
-                pass
+                parts = device_id.split(",")
+                return float(parts[0]), float(parts[1])
+            except (ValueError, IndexError):
+                return None
 
-        try:
-            idx = self.all_stations.index(device_id)
-        except ValueError:
-            return None
+        # The primary station falls back to the Home Assistant home location as
+        # a documented approximation when its coordinates could not be resolved.
+        # Neighbour stations without resolved coordinates return None (excluded).
+        if self.all_stations and device_id == self.all_stations[0]:
+            return self.hass.config.latitude, self.hass.config.longitude
 
-        # 2. Return coordinates based on index
-        if idx == 0:
-            return ref_lat, ref_lon
-        elif idx == 1:
-            return ref_lat + 0.15, ref_lon + 0.15
-        elif idx == 2:
-            return ref_lat + 0.15, ref_lon - 0.15
-        else:
-            # Distribute dynamically based on idx to prevent overlap/collinearity
-            angle = (idx - 3) * (2 * math.pi / 6)
-            dist_offset = 0.20
-            offset_lat = dist_offset * math.sin(angle)
-            offset_lon = dist_offset * math.cos(angle)
-            return ref_lat + offset_lat, ref_lon + offset_lon
+        return None
+
+    def _owns_device(self, device_id: str) -> bool:
+        """Return True if the device belongs to a station this entry monitors.
+
+        The WebSocket session is shared across every config entry using the
+        same API token, so each coordinator receives messages for devices it
+        does not monitor. Membership is decided by whether the device maps to a
+        station in this entry's ``all_stations`` list.
+        """
+        if not device_id:
+            return False
+        station = self.device_to_station.get(device_id, device_id)
+        return station in self.all_stations or device_id in self.all_stations
 
     def _calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """Calculate the great-circle distance between two coordinates (in km)."""
@@ -1394,6 +1429,13 @@ class TempestStrikeCoordinator:
         msg_type = message_data.get("type")
         _LOGGER.debug("Processing WebSocket message of type: %s", msg_type)
 
+        # The WebSocket session is shared across all config entries using the
+        # same token, so drop device messages that belong to another entry.
+        raw_device_id = message_data.get("device_id")
+        if raw_device_id is not None and not self._owns_device(str(raw_device_id)):
+            _LOGGER.debug("Ignoring message for unmonitored device %s", raw_device_id)
+            return
+
         if msg_type == "obs_st":
             # obs_st payload indices (WeatherFlow Tempest WS spec):
             # obs_st payload indices (WeatherFlow Tempest WS spec):
@@ -1405,29 +1447,19 @@ class TempestStrikeCoordinator:
             obs = message_data.get("obs", [])
             if obs and len(obs[0]) >= 13:
                 interval_min = (
-                    float(obs[0][17])
-                    if len(obs[0]) > 17 and obs[0][17] is not None
-                    else 1.0
+                    float(obs[0][17]) if len(obs[0]) > 17 and obs[0][17] is not None else 1.0
                 )
                 rain_accum_mm = (
-                    float(obs[0][12])
-                    if len(obs[0]) > 12 and obs[0][12] is not None
-                    else 0.0
+                    float(obs[0][12]) if len(obs[0]) > 12 and obs[0][12] is not None else 0.0
                 )
                 self.wind_speed = (
-                    float(obs[0][2])
-                    if len(obs[0]) > 2 and obs[0][2] is not None
-                    else 0.0
+                    float(obs[0][2]) if len(obs[0]) > 2 and obs[0][2] is not None else 0.0
                 )
                 self.wind_direction = (
-                    float(obs[0][4])
-                    if len(obs[0]) > 4 and obs[0][4] is not None
-                    else 0.0
+                    float(obs[0][4]) if len(obs[0]) > 4 and obs[0][4] is not None else 0.0
                 )
                 self.solar_radiation = (
-                    float(obs[0][11])
-                    if len(obs[0]) > 11 and obs[0][11] is not None
-                    else 0.0
+                    float(obs[0][11]) if len(obs[0]) > 11 and obs[0][11] is not None else 0.0
                 )
                 # Convert per-interval accumulation (mm) to mm/h
                 self.rain_rate = round(rain_accum_mm * (60.0 / interval_min), 2)
@@ -1468,7 +1500,7 @@ class TempestStrikeCoordinator:
 
         timestamp = int(evt[0])
         distance = float(evt[1])
-        _LOGGER.info(
+        _LOGGER.debug(
             "Parsed strike event: device_id=%s, timestamp=%d, distance=%f",
             device_id,
             timestamp,
@@ -1477,7 +1509,7 @@ class TempestStrikeCoordinator:
 
         # Map device_id to station_id
         station_id = self.device_to_station.get(device_id, device_id)
-        _LOGGER.info("Mapped device_id %s to station_id %s", device_id, station_id)
+        _LOGGER.debug("Mapped device_id %s to station_id %s", device_id, station_id)
 
         # Track strike counts and last strike parameters per station
         self.station_strikes[station_id] = self.station_strikes.get(station_id, 0) + 1
@@ -1489,10 +1521,10 @@ class TempestStrikeCoordinator:
         self._record_raw_strike(device_id, station_id, timestamp, distance)
         self.async_update_listeners()
 
-        # Find or create a group bucket matching timestamp within a 3-second variance tolerance
+        # Find or create a group bucket matching timestamp within the variance tolerance
         matched_timestamp = None
         for bucket_ts in list(self.strike_buffer.keys()):
-            if abs(bucket_ts - timestamp) <= 3:
+            if abs(bucket_ts - timestamp) <= STRIKE_BUCKET_TOLERANCE_SEC:
                 matched_timestamp = bucket_ts
                 break
 
@@ -1500,7 +1532,7 @@ class TempestStrikeCoordinator:
             matched_timestamp = timestamp
             self.strike_buffer[matched_timestamp] = {}
             self.recent_strike_timestamps.append(timestamp)
-            _LOGGER.info("Created new strike buffer bucket for timestamp %d", matched_timestamp)
+            _LOGGER.debug("Created new strike buffer bucket for timestamp %d", matched_timestamp)
 
             @callback
             def _process_bucket(_: object) -> None:
@@ -1513,7 +1545,7 @@ class TempestStrikeCoordinator:
                 if not bucket:
                     return
 
-                _LOGGER.info("Processing strike buffer bucket %d: %s", matched_timestamp, bucket)
+                _LOGGER.debug("Processing strike buffer bucket %d: %s", matched_timestamp, bucket)
 
                 strike_events = []
                 for dev_id, dist in list(bucket.items()):
@@ -1531,8 +1563,8 @@ class TempestStrikeCoordinator:
                     name = self.station_names.get(dev_id, dev_id)
                     station_info.append(f"{name} ({dist} km)")
 
-                if len(strike_events) >= 3:
-                    _LOGGER.info(
+                if len(strike_events) >= MIN_STATIONS_FOR_TRILATERATION:
+                    _LOGGER.debug(
                         "Invoking MLAT calculation with coordinates/distances: %s", strike_events
                     )
                     self._calculate_trilateration(
@@ -1542,33 +1574,37 @@ class TempestStrikeCoordinator:
                         station_ids=list(bucket.keys()),
                     )
                 else:
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "Trilateration could not be calculated: only %d stations reported this strike "
-                        "(minimum 3 required). Reporting stations: %s",
+                        "(minimum %d required). Reporting stations: %s",
                         len(strike_events),
+                        MIN_STATIONS_FOR_TRILATERATION,
                         ", ".join(station_info),
                     )
                     self.last_trilateration_status = "insufficient_stations"
                     self.last_trilateration_timestamp = float(matched_timestamp)
-                    self.last_trilateration_error = f"Only {len(strike_events)} stations reported this strike (minimum 3 required)."
+                    self.last_trilateration_error = (
+                        f"Only {len(strike_events)} stations reported this strike "
+                        f"(minimum {MIN_STATIONS_FOR_TRILATERATION} required)."
+                    )
                     self.last_trilateration_reporting = station_info
                     self.async_update_listeners()
 
                 # Evict from buffer to prevent reprocessing
                 del self.strike_buffer[matched_timestamp]
 
-            # Allow 3.0 seconds to collect all N stations
-            timer = async_call_later(self.hass, 3.0, _process_bucket)
+            # Allow time to collect all N reporting stations before solving.
+            timer = async_call_later(self.hass, STRIKE_BUCKET_SETTLE_SEC, _process_bucket)
             self._strike_timers[matched_timestamp] = timer
 
         self.strike_buffer[matched_timestamp][station_id] = distance
         bucket = self.strike_buffer[matched_timestamp]
-        _LOGGER.info("Current strike buffer status for bucket %d: %s", matched_timestamp, bucket)
+        _LOGGER.debug("Current strike buffer status for bucket %d: %s", matched_timestamp, bucket)
 
         # Cleanup old entries to prevent memory leak
         for bucket_ts in list(self.strike_buffer.keys()):
             # Fallback cleanup for very old buckets (e.g. if a timer was cancelled or failed)
-            if timestamp - bucket_ts > 10:
+            if timestamp - bucket_ts > STRIKE_BUCKET_MAX_AGE_SEC:
                 del self.strike_buffer[bucket_ts]
                 if bucket_ts in self._strike_timers:
                     timer = self._strike_timers.pop(bucket_ts)
@@ -1925,15 +1961,17 @@ class WeatherFlowVectorDataView(HomeAssistantView):
         cache_path = self.hass.config.path(
             f"custom_components/weatherflow_lightning_trilateration/{cache_filename}"
         )
-        if os.path.exists(cache_path):
+
+        def _read_cache():
+            # Existence check + read happen together in the executor to avoid
+            # blocking filesystem calls on the event loop.
             try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (FileNotFoundError, OSError, ValueError):
+                return None
 
-                def _read_cache() -> dict:
-                    with open(cache_path, "r", encoding="utf-8") as f:
-                        return json.load(f)
-
-                data = await request.app["hass"].async_add_executor_job(_read_cache)
-                return self.json(data)
-            except Exception as e:
-                _LOGGER.error("Failed to read vector cache: %s", e)
+        data = await self.hass.async_add_executor_job(_read_cache)
+        if data is not None:
+            return self.json(data)
         return self.json({"water": [], "forest": []})
