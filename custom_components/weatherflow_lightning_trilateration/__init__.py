@@ -1396,19 +1396,39 @@ class TempestStrikeCoordinator:
 
         if msg_type == "obs_st":
             # obs_st payload indices (WeatherFlow Tempest WS spec):
-            #  [0] epoch  [1] interval(min)  [2] wind_lull  [3] wind_avg
-            #  [4] wind_gust  [5] wind_direction  [6] wind_sample_interval
-            #  [7] pressure  [8] temperature  [9] humidity  [10] illuminance
-            #  [11] uv  [12] solar_radiation  [13] rain_accumulated(mm/interval)
-            #  [14] precip_type  [15] local_daily_rain  [16] precip_analysis
-            #  [17] battery  [18] report_interval
+            # obs_st payload indices (WeatherFlow Tempest WS spec):
+            #  [0] epoch  [1] wind_lull  [2] wind_avg  [3] wind_gust
+            #  [4] wind_dir  [5] wind_interval  [6] station_pressure  [7] air_temperature
+            #  [8] relative_humidity  [9] illuminance  [10] uv  [11] solar_radiation
+            #  [12] rain_accumulated  [13] precip_type  [14] lightning_avg_dist
+            #  [15] lightning_strike_count  [16] battery  [17] report_interval
             obs = message_data.get("obs", [])
-            if obs and len(obs[0]) >= 14:
-                interval_min = float(obs[0][1]) if obs[0][1] else 1.0
-                rain_accum_mm = float(obs[0][13])
-                self.wind_speed = float(obs[0][3])
-                self.wind_direction = float(obs[0][5])
-                self.solar_radiation = float(obs[0][12])
+            if obs and len(obs[0]) >= 13:
+                interval_min = (
+                    float(obs[0][17])
+                    if len(obs[0]) > 17 and obs[0][17] is not None
+                    else 1.0
+                )
+                rain_accum_mm = (
+                    float(obs[0][12])
+                    if len(obs[0]) > 12 and obs[0][12] is not None
+                    else 0.0
+                )
+                self.wind_speed = (
+                    float(obs[0][2])
+                    if len(obs[0]) > 2 and obs[0][2] is not None
+                    else 0.0
+                )
+                self.wind_direction = (
+                    float(obs[0][4])
+                    if len(obs[0]) > 4 and obs[0][4] is not None
+                    else 0.0
+                )
+                self.solar_radiation = (
+                    float(obs[0][11])
+                    if len(obs[0]) > 11 and obs[0][11] is not None
+                    else 0.0
+                )
                 # Convert per-interval accumulation (mm) to mm/h
                 self.rain_rate = round(rain_accum_mm * (60.0 / interval_min), 2)
                 _LOGGER.debug(
