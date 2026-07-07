@@ -48,6 +48,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 STRIKE_MARKER_TTL_SEC - age,
                 storage,
                 instance_name,
+                strike.get("stations", []),
             )
             restored_strikes.append(entity)
 
@@ -80,9 +81,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             # Avoid duplicate markers when a replay overlaps existing strikes.
             return
 
-        storage.add_strike(latitude, longitude, timestamp)
+        stations = event.data.get("stations", [])
+        storage.add_strike(latitude, longitude, timestamp, stations)
         entity = WeatherFlowLightningStrikeEntity(
-            latitude, longitude, timestamp, remaining, storage, instance_name
+            latitude, longitude, timestamp, remaining, storage, instance_name, stations
         )
         for add_callback in _ADD_ENTITIES_CALLBACKS:
             add_callback([entity])
@@ -120,9 +122,16 @@ class WeatherFlowStrikeStorage:
             for s in self.strikes
         )
 
-    def add_strike(self, latitude: float, longitude: float, timestamp: float) -> None:
+    def add_strike(self, latitude: float, longitude: float, timestamp: float, stations: list = None) -> None:
         """Add a strike and schedule save."""
-        self.strikes.append({"latitude": latitude, "longitude": longitude, "time": timestamp})
+        self.strikes.append(
+            {
+                "latitude": latitude,
+                "longitude": longitude,
+                "time": timestamp,
+                "stations": stations or [],
+            }
+        )
         self._schedule_save()
 
     def remove_strike(self, timestamp: float) -> None:
@@ -151,6 +160,7 @@ class WeatherFlowLightningStrikeEntity(GeolocationEvent):
         remaining_time: float,
         storage: WeatherFlowStrikeStorage,
         instance_name: str,
+        stations: list = None,
     ) -> None:
         """Initialize the entity."""
         self._attr_name = f"{instance_name} Lightning Strike"
@@ -159,6 +169,14 @@ class WeatherFlowLightningStrikeEntity(GeolocationEvent):
         self.timestamp = timestamp
         self.remaining_time = remaining_time
         self.storage = storage
+        self.stations = stations or []
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return entity specific state attributes."""
+        return {
+            "stations": self.stations,
+        }
 
     @property
     def latitude(self) -> float:

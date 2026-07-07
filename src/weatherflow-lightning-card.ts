@@ -2409,7 +2409,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       if (strike.time <= this.playbackTime) {
         if (!strike.animated) {
           strike.animated = true;
-          this.triggerStrikeAnimation(strike.x, strike.z);
+          this.triggerStrikeAnimation(strike.x, strike.z, strike.stations);
         }
       } else {
         strike.animated = false;
@@ -2461,7 +2461,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     return paths;
   }
 
-  triggerStrikeAnimation(x, z) {
+  triggerStrikeAnimation(x, z, stations = []) {
     if (!this.initialized) return;
 
     const terrainY = this.getTerrainHeight(x, z);
@@ -2470,7 +2470,10 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     if (this.stationMeshes) {
       this.stationMeshes.forEach((sm) => {
-        sm.strikeIntensity = 1.0;
+        const isContributor = !stations || stations.length === 0 || stations.includes(sm.mesh.userData.station.id);
+        if (isContributor) {
+          sm.strikeIntensity = 1.0;
+        }
       });
     }
 
@@ -2814,6 +2817,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       const stateObj = hass.states[entityId];
       const lat = parseFloat(stateObj.attributes.latitude);
       const lon = parseFloat(stateObj.attributes.longitude);
+      const stations = stateObj.attributes.stations || [];
 
       if (!isNaN(lat) && !isNaN(lon)) {
         const gridX = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
@@ -2823,7 +2827,8 @@ class WeatherFlowLightningCard extends HTMLElement {
           id: entityId,
           time: time,
           x: gridX,
-          z: gridZ
+          z: gridZ,
+          stations: stations
         });
       }
     });
@@ -2846,11 +2851,12 @@ class WeatherFlowLightningCard extends HTMLElement {
           time: strike.time,
           x: strike.x,
           z: strike.z,
+          stations: strike.stations,
           animated: shouldAnimateNow || (this.playbackMode !== 'live' && strike.time <= this.playbackTime)
         });
 
         if (shouldAnimateNow) {
-          this.triggerStrikeAnimation(strike.x, strike.z);
+          this.triggerStrikeAnimation(strike.x, strike.z, strike.stations);
         }
       }
     });

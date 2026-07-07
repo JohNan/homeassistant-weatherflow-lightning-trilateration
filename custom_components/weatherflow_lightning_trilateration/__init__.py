@@ -1516,7 +1516,10 @@ class TempestStrikeCoordinator:
                         "Invoking MLAT calculation with coordinates/distances: %s", strike_events
                     )
                     self._calculate_trilateration(
-                        strike_events, station_info, timestamp=float(matched_timestamp)
+                        strike_events,
+                        station_info,
+                        timestamp=float(matched_timestamp),
+                        station_ids=list(bucket.keys()),
                     )
                 else:
                     _LOGGER.info(
@@ -1626,7 +1629,11 @@ class TempestStrikeCoordinator:
         return calculated_latitude, calculated_longitude, "success", max_residual
 
     def _calculate_trilateration(
-        self, strike_events: list, station_info: list = None, timestamp: float = None
+        self,
+        strike_events: list,
+        station_info: list = None,
+        timestamp: float = None,
+        station_ids: list = None,
     ) -> None:
         """Solve for the strike location and report/emit the result."""
         lat, lon, status, residual = self._solve_trilateration(strike_events)
@@ -1686,9 +1693,11 @@ class TempestStrikeCoordinator:
         self.last_trilateration_error = None
         self.async_update_listeners()
 
-        self._fire_strike(lat, lon, self.last_trilateration_timestamp)
+        self._fire_strike(lat, lon, self.last_trilateration_timestamp, station_ids)
 
-    def _fire_strike(self, latitude: float, longitude: float, timestamp: float) -> None:
+    def _fire_strike(
+        self, latitude: float, longitude: float, timestamp: float, station_ids: list = None
+    ) -> None:
         """Fire the strike-calculated event that creates a map marker."""
         self.hass.bus.async_fire(
             event_key(self.entry.entry_id),
@@ -1696,6 +1705,7 @@ class TempestStrikeCoordinator:
                 "latitude": latitude,
                 "longitude": longitude,
                 "timestamp": timestamp,
+                "stations": station_ids or [],
             },
         )
 
@@ -1798,7 +1808,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=07f3d5e"
+    url = f"{base_url}?v=a7ce855"
 
     existing_item = None
     if hasattr(resources, "async_items"):
