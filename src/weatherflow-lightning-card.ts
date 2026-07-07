@@ -309,13 +309,17 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.cameraPhi = Math.max(0.1, Math.min(Math.PI / 2 - 0.05, this.cameraPhi));
     this.zoomRadius = Math.max(2.0, Math.min(150, this.zoomRadius));
 
+    if (!this.cameraTarget) {
+      this.cameraTarget = new THREE.Vector3(0, 0, 0);
+    }
+
     const x = this.zoomRadius * Math.sin(this.cameraPhi) * Math.sin(this.cameraTheta);
     const y = this.zoomRadius * Math.cos(this.cameraPhi);
     const z = this.zoomRadius * Math.sin(this.cameraPhi) * Math.cos(this.cameraTheta);
 
     if (this.camera) {
-      this.camera.position.set(x, y, z);
-      this.camera.lookAt(0, 0, 0);
+      this.camera.position.set(this.cameraTarget.x + x, this.cameraTarget.y + y, this.cameraTarget.z + z);
+      this.camera.lookAt(this.cameraTarget);
     }
   }
 
@@ -367,6 +371,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.cameraTheta = 0.0;
     // [E] 45° oblique angle — terrain relief reads clearly against the horizon
     this.cameraPhi = Math.PI / 4;
+    this.cameraTarget = new THREE.Vector3(0, 0, 0);
     this.updateCameraPosition();
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -544,12 +549,24 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     // Add mouse & touch event listeners for rotation/zoom
     let isDragging = false;
+    let isPanning = false;
     let previousMousePosition = { x: 0, y: 0 };
+
+    this.container.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+    });
 
     this.container.addEventListener('mousedown', (e) => {
       this.lastInteractionTime = Date.now();
-      isDragging = true;
-      this.container.style.cursor = 'grabbing';
+      if (e.button === 2 || e.button === 1 || e.shiftKey) {
+        isPanning = true;
+        isDragging = false;
+        this.container.style.cursor = 'move';
+      } else {
+        isDragging = true;
+        isPanning = false;
+        this.container.style.cursor = 'grabbing';
+      }
       previousMousePosition = { x: e.clientX, y: e.clientY };
     });
 
@@ -564,6 +581,22 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.updateCameraPosition();
 
         previousMousePosition = { x: e.clientX, y: e.clientY };
+      } else if (isPanning) {
+        const deltaX = e.clientX - previousMousePosition.x;
+        const deltaY = e.clientY - previousMousePosition.y;
+
+        const localRight = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+        const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
+
+        const factor = this.zoomRadius * 0.0015;
+        this.cameraTarget.addScaledVector(localRight, -deltaX * factor);
+        this.cameraTarget.addScaledVector(localUp, deltaY * factor);
+        this.cameraTarget.x = Math.max(-30, Math.min(30, this.cameraTarget.x));
+        this.cameraTarget.y = Math.max(-5, Math.min(15, this.cameraTarget.y));
+        this.cameraTarget.z = Math.max(-30, Math.min(30, this.cameraTarget.z));
+
+        this.updateCameraPosition();
+        previousMousePosition = { x: e.clientX, y: e.clientY };
       } else {
         const rect = this.renderer.domElement.getBoundingClientRect();
         this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -574,6 +607,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     this._mouseupHandler = () => {
       isDragging = false;
+      isPanning = false;
       this.container.style.cursor = 'grab';
     };
     window.addEventListener('mouseup', this._mouseupHandler);
@@ -1087,20 +1121,22 @@ class WeatherFlowLightningCard extends HTMLElement {
       });
     }
 
-    // 2. Render Forests (Point-in-Polygon Grid generation)
+    // 2. Render Forests (Point-in-Polygon Grid generation & Forest Floor)
     if (data.forest && Array.isArray(data.forest)) {
       const forestPolygons = [];
-      data.forest.forEach((poly) => {
-        if (!poly.coordinates || poly.coordinates.length < 3) return;
-        const pts = poly.coordinates.map((pt) => {
-          const lat = pt[0];
-          const lon = pt[1];
-          const x = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
-          const worldZ = -R * (lat - refLat) * (Math.PI / 180.0);
-          return [x, worldZ];
-        });
-        forestPolygons.push(pts);
+      const forestMat = new THREE.MeshPhongMaterial({
+        color: 0x14532d, // dark forest green
+        transparent: true,
+        opacity: 0.45,
+        side: THREE.DoubleSide,
+        flatShading: true
       });
+
+      const pineInstances = [];
+      const oakInstances = [];
+      const birchInstances = [];
+      let treeCount = 0;
+      const MAX_TREES = 1500;
 
       const isPointInPolygon = (point, vs) => {
         const x = point[0],
@@ -1117,6 +1153,74 @@ class WeatherFlowLightningCard extends HTMLElement {
         return inside;
       };
 
+      data.forest.forEach((poly) => {
+        if (!poly.coordinates || poly.coordinates.length < 3) return;
+
+        const shapePoints = [];
+        let avgY = 0;
+        let validPoints = 0;
+
+        const pts = poly.coordinates.map((pt) => {
+          const lat = pt[0];
+          const lon = pt[1];
+          const x = R * (lon - refLon) * (Math.PI / 180.0) * cosLat;
+          const worldZ = -R * (lat - refLat) * (Math.PI / 180.0);
+          if (x >= -20 && x <= 20 && worldZ >= -20 && worldZ <= 20) {
+            shapePoints.push(new THREE.Vector2(x, -worldZ));
+            avgY += this.getTerrainHeight(x, worldZ);
+            validPoints++;
+          }
+          return [x, worldZ];
+        });
+
+        forestPolygons.push(pts);
+
+        // A. Render Flat Forest Floor mesh
+        if (shapePoints.length >= 3) {
+          avgY /= validPoints;
+          const shape = new THREE.Shape(shapePoints);
+          const shapeGeo = new THREE.ShapeGeometry(shape);
+          const mesh = new THREE.Mesh(shapeGeo, forestMat);
+          mesh.rotation.x = -Math.PI / 2;
+          mesh.position.y = avgY + 0.06;
+          this.features3DGroup.add(mesh);
+        }
+
+        // B. Add Centroid fallback tree to guarantee every forest patch has a tree
+        if (pts.length > 0 && treeCount < MAX_TREES) {
+          let sumX = 0,
+            sumZ = 0;
+          pts.forEach((p) => {
+            sumX += p[0];
+            sumZ += p[1];
+          });
+          const cx = Math.max(-19.5, Math.min(19.5, sumX / pts.length));
+          const cz = Math.max(-19.5, Math.min(19.5, sumZ / pts.length));
+          const y = this.getTerrainHeight(cx, cz);
+          const scale = 0.85 + Math.random() * 0.4;
+          const rotY = Math.random() * Math.PI * 2;
+
+          const dummy = new THREE.Object3D();
+          dummy.position.set(cx, y, cz);
+          dummy.rotation.y = rotY;
+          dummy.scale.set(scale, scale, scale);
+          dummy.updateMatrix();
+
+          const r = Math.random();
+          if (r < 0.33) {
+            pineInstances.push(dummy.matrix.clone());
+          } else if (r < 0.66) {
+            oakInstances.push(dummy.matrix.clone());
+          } else {
+            birchInstances.push(dummy.matrix.clone());
+          }
+          treeCount++;
+        }
+      });
+
+      const SPACING = 0.45;
+      const MAX_JITTER = SPACING * 0.35;
+
       const isInsideAnyForest = (pt) => {
         for (const poly of forestPolygons) {
           if (isPointInPolygon(pt, poly)) return true;
@@ -1124,17 +1228,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         return false;
       };
 
-      const SPACING = 0.7;
-      const MAX_TREES = 1500;
-      const MAX_JITTER = SPACING * 0.35;
-
-      const pineInstances = [];
-      const oakInstances = [];
-      const birchInstances = [];
-
-      let treeCount = 0;
-
-      // Candidate grid
+      // Candidate grid fill
       for (let x = -19.5; x <= 19.5; x += SPACING) {
         for (let z = -19.5; z <= 19.5; z += SPACING) {
           if (treeCount >= MAX_TREES) break;
@@ -1519,7 +1613,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
     this.terrainMapMesh = new THREE.Mesh(terrainMapGeo, terrainMapMat);
     this.terrainMapMesh.rotation.x = -Math.PI / 2;
-    this.terrainMapMesh.position.y = -0.01; // [D] just below relief mesh — prevents z-fighting
+    this.terrainMapMesh.position.y = -0.2; // [D] just below relief mesh — prevents z-fighting and covering valleys/waterbodies
     this.scene.add(this.terrainMapMesh);
 
     // [C] LAYER 2 — displaced relief mesh with hypsometric vertex colouring.
@@ -1602,7 +1696,8 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.scene.add(group);
       this.stationMeshes.push({
         mesh: group,
-        pulseVal: Math.random() * Math.PI
+        pulseVal: Math.random() * Math.PI,
+        strikeIntensity: 0.0
       });
     });
   }
@@ -1981,10 +2076,41 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.stationMeshes.forEach((sm) => {
         sm.pulseVal += 0.04;
         const sinVal = Math.sin(sm.pulseVal);
-        const scale = 1 + sinVal * 0.1;
+        let scale = 1 + sinVal * 0.1;
+        let baseOpacity = 0.5 + sinVal * 0.3;
+
+        // If a strike was recorded, apply flash/glow effect to the station
+        if (sm.strikeIntensity && sm.strikeIntensity > 0) {
+          sm.strikeIntensity -= 0.02; // decay over ~1s
+          const flashScale = 1.0 + sm.strikeIntensity * 1.5;
+          scale *= flashScale;
+          baseOpacity = Math.min(1.0, baseOpacity + sm.strikeIntensity * 0.5);
+
+          // Flash top sphere (index 2) white and scale it up
+          if (sm.mesh.children && sm.mesh.children[2]) {
+            sm.mesh.children[2].scale.set(flashScale, flashScale, flashScale);
+            sm.mesh.children[2].material.color.setHex(0xffffff);
+          }
+          // Flash tower cylinder (index 1) white
+          if (sm.mesh.children && sm.mesh.children[1]) {
+            sm.mesh.children[1].material.color.setHex(0xffffff);
+          }
+        } else {
+          // Reset colors and scale to original station color
+          const originalColor = sm.mesh.userData.station.color;
+          if (sm.mesh.children && sm.mesh.children[2]) {
+            sm.mesh.children[2].scale.set(1, 1, 1);
+            sm.mesh.children[2].material.color.setHex(originalColor);
+          }
+          if (sm.mesh.children && sm.mesh.children[1]) {
+            sm.mesh.children[1].scale.set(1, 1, 1);
+            sm.mesh.children[1].material.color.setHex(originalColor);
+          }
+        }
+
         if (sm.mesh.children && sm.mesh.children[0]) {
           sm.mesh.children[0].scale.set(scale, scale, 1);
-          sm.mesh.children[0].material.opacity = 0.5 + sinVal * 0.3;
+          sm.mesh.children[0].material.opacity = baseOpacity;
         }
       });
     }
@@ -2341,6 +2467,12 @@ class WeatherFlowLightningCard extends HTMLElement {
     const terrainY = this.getTerrainHeight(x, z);
     const targetPos = new THREE.Vector3(x, terrainY, z);
     const startPos = new THREE.Vector3(x + (Math.random() - 0.5) * 4, terrainY + 18, z + (Math.random() - 0.5) * 4);
+
+    if (this.stationMeshes) {
+      this.stationMeshes.forEach((sm) => {
+        sm.strikeIntensity = 1.0;
+      });
+    }
 
     // [6] Screen-flash: spike ambient intensity to simulate sky illumination
     if (this.ambientLight) {
