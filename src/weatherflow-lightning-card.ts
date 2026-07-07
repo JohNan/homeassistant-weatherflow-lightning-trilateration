@@ -43,6 +43,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.rainParticles = null;
     this.windParticles = null;
     this.lastFrameTime = null;
+    this.showHeightColor = true;
   }
 
   static getConfigElement() {
@@ -74,6 +75,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       elevation_scale: 1.5,
       show_3d_features: false,
       playback_speed: 120,
+      show_height_color: true,
       ...config
     };
     this.playbackSpeed = parseFloat(this.config.playback_speed) || 120;
@@ -450,7 +452,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       .weather-telemetry-hud.collapsed .hud-title {
         display: none;
       }
-      .hud-toggle-btn {
+      .hud-toggle-btn, .hud-color-btn {
         background: none;
         border: none;
         color: #94a3b8;
@@ -462,7 +464,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         justify-content: center;
         transition: all 0.2s ease;
       }
-      .hud-toggle-btn:hover {
+      .hud-toggle-btn:hover, .hud-color-btn:hover {
         color: #38bdf8;
         background-color: rgba(56, 189, 248, 0.1);
       }
@@ -525,6 +527,15 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
 
     this.weatherOverlay.addEventListener('click', (e) => {
+      const colorBtn = (e.target as HTMLElement).closest('.hud-color-btn');
+      if (colorBtn) {
+        e.stopPropagation();
+        this.showHeightColor = !this.showHeightColor;
+        this._paintHypsometricColours();
+        this.updateWeatherOverlay();
+        return;
+      }
+
       const toggleBtn = (e.target as HTMLElement).closest('.hud-toggle-btn');
       if (toggleBtn || this.hudCollapsed) {
         e.stopPropagation();
@@ -1343,11 +1354,6 @@ class WeatherFlowLightningCard extends HTMLElement {
     const range = maxH - minH || 1.0;
 
     // Hypsometric colour stops (linear RGB, gamma-corrected visually)
-    // t=0.00 deep valley  → dark forest green
-    // t=0.35 lowland      → medium green
-    // t=0.55 mid slope    → olive-brown
-    // t=0.75 high slope   → warm brown
-    // t=1.00 peak         → near-white grey
     const stops = [
       { t: 0.0, r: 0.05, g: 0.15, b: 0.05 },
       { t: 0.35, r: 0.12, g: 0.28, b: 0.08 },
@@ -1374,17 +1380,24 @@ class WeatherFlowLightningCard extends HTMLElement {
       };
     };
 
+    const posAttr = this.terrainGeo.attributes.position;
     const colAttr = this.terrainGeo.attributes.color;
-    // terrainGeo vertices: row r = 0..14, col c = 0..14, vertexIndex = r*15+c
-    // scaledHeights index: i = (14-r)*15+c  (matches PlaneGeometry row flip)
-    for (let r = 0; r <= 14; r++) {
-      const i = 14 - r;
-      for (let c = 0; c <= 14; c++) {
-        const h = this.scaledHeights[i * 15 + c];
+    if (!colAttr) return;
+
+    const count = posAttr.count;
+    const showHeightColor = this.showHeightColor !== false;
+
+    for (let i = 0; i < count; i++) {
+      if (!showHeightColor) {
+        // Neutral subtle dark theme color if toggled off
+        colAttr.setXYZ(i, 0.02, 0.02, 0.02);
+      } else {
+        const vx = posAttr.getX(i);
+        const vy = posAttr.getY(i);
+        const h = this.getTerrainHeight(vx, -vy);
         const t = (h - minH) / range;
         const col = lerpStop(Math.max(0, Math.min(1, t)));
-        const vi = r * 15 + c;
-        colAttr.setXYZ(vi, col.r, col.g, col.b);
+        colAttr.setXYZ(i, col.r, col.g, col.b);
       }
     }
     colAttr.needsUpdate = true;
@@ -1407,18 +1420,16 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     const posAttr = this.terrainGeo.attributes.position;
-    for (let r = 0; r <= 14; r++) {
-      const i = 14 - r;
-      for (let c = 0; c <= 14; c++) {
-        const j = c;
-        const vertexIndex = r * 15 + c;
-        const relElev = this.scaledHeights[i * 15 + j];
-        posAttr.setZ(vertexIndex, relElev);
-      }
+    const count = posAttr.count;
+    for (let i = 0; i < count; i++) {
+      const vx = posAttr.getX(i);
+      const vy = posAttr.getY(i);
+      const yHeight = this.getTerrainHeight(vx, -vy);
+      posAttr.setZ(i, yHeight);
     }
     posAttr.needsUpdate = true;
     this.terrainGeo.computeVertexNormals();
-    this._paintHypsometricColours(); // [C] repaint vertex colours
+    this._paintHypsometricColours();
 
     this.updateStationHeights();
     this.updateRangeRings();
@@ -1611,9 +1622,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     const mapSize = 40;
 
     // Define terrainGeo first so both the relief mesh and the map overlay mesh can share it
-    this.terrainGeo = new THREE.PlaneGeometry(mapSize, mapSize, 14, 14);
+    this.terrainGeo = new THREE.PlaneGeometry(mapSize, mapSize, 30, 30);
     // Initialise vertex colours (will be repainted in updateTerrainGeometry)
-    const vertCount = 15 * 15;
+    const vertCount = this.terrainGeo.attributes.position.count;
     const colours = new Float32Array(vertCount * 3);
     colours.fill(0.02); // near-black until first elevation data arrives
     this.terrainGeo.setAttribute('color', new THREE.BufferAttribute(colours, 3));
@@ -1779,14 +1790,22 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.weatherOverlay.innerHTML = `
       <div class="hud-header">
         <div class="hud-title">Telemetry</div>
-        <button class="hud-toggle-btn" title="Minimize Weather HUD">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="4 14 10 14 10 20"></polyline>
-            <polyline points="20 10 14 10 14 4"></polyline>
-            <line x1="14" y1="10" x2="21" y2="3"></line>
-            <line x1="10" y1="14" x2="3" y2="21"></line>
-          </svg>
-        </button>
+        <div class="hud-actions" style="display: flex; gap: 8px;">
+          <button class="hud-color-btn" title="Toggle Height Map Color" style="color: ${this.showHeightColor ? '#10b981' : '#94a3b8'};">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/>
+              <path d="M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12z"/>
+            </svg>
+          </button>
+          <button class="hud-toggle-btn" title="Minimize Weather HUD">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 14 10 14 10 20"></polyline>
+              <polyline points="20 10 14 10 14 4"></polyline>
+              <line x1="14" y1="10" x2="21" y2="3"></line>
+              <line x1="10" y1="14" x2="3" y2="21"></line>
+            </svg>
+          </button>
+        </div>
       </div>
       <div class="hud-content">
         <div class="hud-row">
