@@ -769,13 +769,17 @@ class WeatherFlowLightningCard extends HTMLElement {
         const theta = (i / segments) * Math.PI * 2;
         const x = r * Math.cos(theta);
         const z = r * Math.sin(theta);
-        points.push(new THREE.Vector3(x, 0.05, z));
+        const y = this.getTerrainHeight(x, z) + 0.15;
+        points.push(new THREE.Vector3(x, y, z));
       }
       const ringGeo = new THREE.BufferGeometry().setFromPoints(points);
       const ringMat = new THREE.LineBasicMaterial({
         color: 0x00f2fe,
         transparent: true,
-        opacity: 0.5
+        opacity: 0.5,
+        polygonOffset: true,
+        polygonOffsetFactor: -4,
+        polygonOffsetUnits: -4
       });
       const ringLine = new THREE.Line(ringGeo, ringMat);
       this.rangeRingsGroup.add(ringLine);
@@ -784,7 +788,10 @@ class WeatherFlowLightningCard extends HTMLElement {
     const lineMat = new THREE.LineBasicMaterial({
       color: 0x00f2fe,
       transparent: true,
-      opacity: 0.3
+      opacity: 0.3,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4
     });
 
     // N-S line (41 points)
@@ -792,7 +799,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     const segments = 40;
     for (let i = 0; i <= segments; i++) {
       const z = -30 + (i / segments) * 60;
-      nsPoints.push(new THREE.Vector3(0, 0.05, z));
+      const y = this.getTerrainHeight(0, z) + 0.15;
+      nsPoints.push(new THREE.Vector3(0, y, z));
     }
     const nsGeo = new THREE.BufferGeometry().setFromPoints(nsPoints);
     const nsLine = new THREE.Line(nsGeo, lineMat);
@@ -802,7 +810,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     const ewPoints = [];
     for (let i = 0; i <= segments; i++) {
       const x = -30 + (i / segments) * 60;
-      ewPoints.push(new THREE.Vector3(x, 0.05, 0));
+      const y = this.getTerrainHeight(x, 0) + 0.15;
+      ewPoints.push(new THREE.Vector3(x, y, 0));
     }
     const ewGeo = new THREE.BufferGeometry().setFromPoints(ewPoints);
     const ewLine = new THREE.Line(ewGeo, lineMat);
@@ -836,7 +845,7 @@ class WeatherFlowLightningCard extends HTMLElement {
           const theta = (i / segments) * Math.PI * 2;
           const x = r * Math.cos(theta);
           const z = r * Math.sin(theta);
-          const y = this.getTerrainHeight(x, z) + 0.1;
+          const y = this.getTerrainHeight(x, z) + 0.15;
           posAttr.setY(i, y);
         }
         posAttr.needsUpdate = true;
@@ -850,7 +859,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       const segments = 40;
       for (let i = 0; i <= segments; i++) {
         const z = -30 + (i / segments) * 60;
-        const y = this.getTerrainHeight(0, z) + 0.1;
+        const y = this.getTerrainHeight(0, z) + 0.15;
         posAttr.setXYZ(i, 0, y, z);
       }
       posAttr.needsUpdate = true;
@@ -862,7 +871,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       const segments = 40;
       for (let i = 0; i <= segments; i++) {
         const x = -30 + (i / segments) * 60;
-        const y = this.getTerrainHeight(x, 0) + 0.1;
+        const y = this.getTerrainHeight(x, 0) + 0.15;
         posAttr.setXYZ(i, x, y, 0);
       }
       posAttr.needsUpdate = true;
@@ -1599,27 +1608,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.scene.add(this.starField);
 
     // ── Terrain layer stack ──────────────────────────────────────────────
-    // Two independent geometries so the map tile stays orthographically
-    // correct regardless of how much vertical exaggeration is applied.
     const mapSize = 40;
 
-    // [B/D] LAYER 1 — flat map tile plane, permanently undeformed, at y=-0.01
-    // The CartoDB overhead imagery is applied here so it never gets
-    // stretched across slope faces.
-    const terrainMapGeo = new THREE.PlaneGeometry(mapSize, mapSize);
-    const terrainMapMat = new THREE.MeshBasicMaterial({
-      color: 0x050b14,
-      side: THREE.FrontSide
-    });
-    this.terrainMapMesh = new THREE.Mesh(terrainMapGeo, terrainMapMat);
-    this.terrainMapMesh.rotation.x = -Math.PI / 2;
-    this.terrainMapMesh.position.y = -0.2; // [D] just below relief mesh — prevents z-fighting and covering valleys/waterbodies
-    this.scene.add(this.terrainMapMesh);
-
-    // [C] LAYER 2 — displaced relief mesh with hypsometric vertex colouring.
-    // Uses a separate geometry so vertices can be pushed up without warping
-    // the tile. MeshStandardMaterial responds correctly to the hemisphere
-    // light added in the previous commit.
+    // Define terrainGeo first so both the relief mesh and the map overlay mesh can share it
     this.terrainGeo = new THREE.PlaneGeometry(mapSize, mapSize, 14, 14);
     // Initialise vertex colours (will be repainted in updateTerrainGeometry)
     const vertCount = 15 * 15;
@@ -1627,6 +1618,17 @@ class WeatherFlowLightningCard extends HTMLElement {
     colours.fill(0.02); // near-black until first elevation data arrives
     this.terrainGeo.setAttribute('color', new THREE.BufferAttribute(colours, 3));
 
+    // [B/D] LAYER 1 — map overlay mesh, now uses displaced geometry to follow the terrain relief
+    const terrainMapMat = new THREE.MeshBasicMaterial({
+      color: 0x050b14,
+      side: THREE.FrontSide
+    });
+    this.terrainMapMesh = new THREE.Mesh(this.terrainGeo, terrainMapMat);
+    this.terrainMapMesh.rotation.x = -Math.PI / 2;
+    this.terrainMapMesh.position.y = -0.005; // [D] just below relief mesh — prevents z-fighting
+    this.scene.add(this.terrainMapMesh);
+
+    // [C] LAYER 2 — displaced relief mesh with hypsometric vertex colouring.
     const reliefMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       roughness: 0.85,
