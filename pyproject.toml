@@ -41,3 +41,6 @@ ignore = ["E501"]
 # Keep collection deterministic: only look under tests/, never pick up
 # root-level developer scripts (e.g. scripts/weatherflow_integration_cli.py).
 testpaths = ["tests"]
+# Put the repo root on sys.path so `custom_components` is importable when
+# pytest is invoked directly (CI), not just via `python -m pytest`.
+pythonpath = ["."]
