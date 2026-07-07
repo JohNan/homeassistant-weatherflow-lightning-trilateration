@@ -2470,7 +2470,10 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     if (this.stationMeshes) {
       this.stationMeshes.forEach((sm) => {
-        const isContributor = !stations || stations.length === 0 || stations.includes(sm.mesh.userData.station.id);
+        const isContributor =
+          !stations ||
+          stations.length === 0 ||
+          stations.some((id) => String(id) === String(sm.mesh.userData.station.id));
         if (isContributor) {
           sm.strikeIntensity = 1.0;
         }
@@ -2721,6 +2724,31 @@ class WeatherFlowLightningCard extends HTMLElement {
 
       this.updateDayNightEngine();
       this.updateWeatherOverlay();
+
+      // Track individual station sensor strike count increases (live mode flash)
+      if (!this.lastStationStrikes) {
+        this.lastStationStrikes = {};
+      }
+      Object.keys(hass.states).forEach((entityId) => {
+        if (entityId.startsWith('sensor.')) {
+          const stateObj = hass.states[entityId];
+          const stationId = stateObj.attributes.station_id;
+          if (stationId !== undefined) {
+            const currentCount = parseInt(stateObj.state) || 0;
+            const prevCount = this.lastStationStrikes[stationId];
+            if (prevCount !== undefined && currentCount > prevCount) {
+              if (this.stationMeshes) {
+                this.stationMeshes.forEach((sm) => {
+                  if (String(sm.mesh.userData.station.id) === String(stationId)) {
+                    sm.strikeIntensity = 1.0;
+                  }
+                });
+              }
+            }
+            this.lastStationStrikes[stationId] = currentCount;
+          }
+        }
+      });
 
       const stationsAttr = attrs.stations;
 
