@@ -1426,6 +1426,91 @@ class WeatherFlowLightningCard extends HTMLElement {
         addInstancedGroup(birchInstances, birchTrunkGeo, birchTrunkMat, [birchCanopyGeo], [birchLeafMat]);
       }
     }
+
+    // 3. Render Roads
+    if (data.road && Array.isArray(data.road)) {
+      const roadMat = new THREE.LineBasicMaterial({
+        color: 0x475569, // slate grey for roads
+        transparent: true,
+        opacity: 0.6
+      });
+
+      data.road.forEach((road) => {
+        if (!road.coordinates || road.coordinates.length < 2) return;
+
+        const points = [];
+        road.coordinates.forEach((pt) => {
+          const lat = pt[0];
+          const lon = pt[1];
+          const { x, z: worldZ } = this._latLonToGrid(lat, lon, refLat, refLon);
+
+          if (x < -20 || x > 20 || worldZ < -20 || worldZ > 20) return;
+
+          const y = this.getTerrainHeight(x, worldZ) + 0.02; // slight offset to prevent Z-fighting
+          points.push(new THREE.Vector3(x, y, worldZ));
+        });
+
+        if (points.length < 2) return;
+
+        const roadGeo = new THREE.BufferGeometry().setFromPoints(points);
+        const line = new THREE.Line(roadGeo, roadMat);
+        this.features3DGroup.add(line);
+      });
+    }
+
+    // 4. Render Buildings (Extruded 3D shapes)
+    if (data.building && Array.isArray(data.building)) {
+      const buildingMat = new THREE.MeshPhongMaterial({
+        color: 0x1e293b, // dark slate for buildings
+        transparent: true,
+        opacity: 0.7,
+        flatShading: true
+      });
+
+      data.building.forEach((b) => {
+        if (!b.coordinates || b.coordinates.length < 3) return;
+
+        const shapePoints = [];
+        let avgX = 0;
+        let avgZ = 0;
+        let validPoints = 0;
+
+        b.coordinates.forEach((pt) => {
+          const lat = pt[0];
+          const lon = pt[1];
+          const { x, z: worldZ } = this._latLonToGrid(lat, lon, refLat, refLon);
+
+          if (x < -20 || x > 20 || worldZ < -20 || worldZ > 20) return;
+
+          shapePoints.push(new THREE.Vector2(x, -worldZ));
+          avgX += x;
+          avgZ += worldZ;
+          validPoints++;
+        });
+
+        if (shapePoints.length < 3) return;
+        avgX /= validPoints;
+        avgZ /= validPoints;
+
+        const baseHeight = this.getTerrainHeight(avgX, avgZ);
+        const elevScale = (this.config.elevation_scale !== undefined ? parseFloat(this.config.elevation_scale) : 1.5) / 1000;
+        const osmHeight = b.height !== undefined ? b.height : 8.0;
+        const extrudeHeight = osmHeight * elevScale;
+
+        const shape = new THREE.Shape(shapePoints);
+        const extrudeSettings = {
+          depth: extrudeHeight,
+          bevelEnabled: false
+        };
+
+        const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+        const mesh = new THREE.Mesh(geom, buildingMat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.y = baseHeight;
+
+        this.features3DGroup.add(mesh);
+      });
+    }
   }
 
   // [C] Shared helper — maps scaledHeights (scene units) to a hypsometric

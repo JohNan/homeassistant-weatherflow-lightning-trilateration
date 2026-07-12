@@ -1086,7 +1086,7 @@ class TempestStrikeCoordinator:
         ref_lat, ref_lon = primary_coords
         safe_primary = str(self.primary_station).replace(",", "_").replace(" ", "_")
         safe_coords = f"{ref_lat}_{ref_lon}".replace(".", "_")
-        cache_filename = f"vector_cache_{safe_primary}_{safe_coords}.json"
+        cache_filename = f"vector_cache_v2_{safe_primary}_{safe_coords}.json"
         cache_path = self.hass.config.path(
             f"custom_components/weatherflow_lightning_trilateration/{cache_filename}"
         )
@@ -1100,14 +1100,17 @@ class TempestStrikeCoordinator:
             _LOGGER.debug("Using cached OSM vector data")
             return
 
-        radius = 15000
         query = f"""
-        [out:json][timeout:30];
+        [out:json][timeout:45];
         (
-          way["natural"="water"](around:{radius},{ref_lat},{ref_lon});
-          relation["natural"="water"](around:{radius},{ref_lat},{ref_lon});
-          way["landuse"="forest"](around:{radius},{ref_lat},{ref_lon});
-          relation["landuse"="forest"](around:{radius},{ref_lat},{ref_lon});
+          way["natural"="water"](around:15000,{ref_lat},{ref_lon});
+          relation["natural"="water"](around:15000,{ref_lat},{ref_lon});
+          way["landuse"="forest"](around:15000,{ref_lat},{ref_lon});
+          relation["landuse"="forest"](around:15000,{ref_lat},{ref_lon});
+          way["highway"~"motorway|trunk|primary|secondary|tertiary"](around:10000,{ref_lat},{ref_lon});
+          way["highway"~"residential|unclassified"](around:3000,{ref_lat},{ref_lon});
+          way["building"](around:3000,{ref_lat},{ref_lon});
+          relation["building"](around:3000,{ref_lat},{ref_lon});
         );
         out geom;
         """
@@ -1127,7 +1130,7 @@ class TempestStrikeCoordinator:
             try:
                 _LOGGER.debug("Querying OSM Overpass API for vector data from %s...", url)
                 async with session.post(
-                    url, data={"data": query}, headers=headers, timeout=30
+                    url, data={"data": query}, headers=headers, timeout=45
                 ) as response:
                     if response.status == 200:
                         raw_data = await response.json()
@@ -1167,6 +1170,8 @@ class TempestStrikeCoordinator:
         elements = raw_data.get("elements", [])
         water_features = []
         forest_features = []
+        road_features = []
+        building_features = []
 
         def merge_ways_into_rings(ways_geom):
             unmerged = []
@@ -1236,15 +1241,18 @@ class TempestStrikeCoordinator:
 
             is_water = tags.get("natural") == "water" or tags.get("waterway") == "riverbank"
             is_forest = tags.get("landuse") == "forest" or tags.get("natural") == "wood"
+            is_road = "highway" in tags
+            is_building = "building" in tags
 
-            if not (is_water or is_forest):
+            if not (is_water or is_forest or is_road or is_building):
                 continue
 
             geometries_to_process = []
 
             if elem_type == "way":
                 geom = elem.get("geometry", [])
-                if geom and len(geom) >= 3:
+                min_len = 2 if is_road else 3
+                if geom and len(geom) >= min_len:
                     geometries_to_process.append(geom)
             elif elem_type == "relation":
                 members = elem.get("members", [])
@@ -1257,7 +1265,8 @@ class TempestStrikeCoordinator:
                 rings = merge_ways_into_rings(outer_ways)
                 for ring in rings:
                     geom = [{"lat": pt[0], "lon": pt[1]} for pt in ring]
-                    if len(geom) >= 3:
+                    min_len = 2 if is_road else 3
+                    if len(geom) >= min_len:
                         geometries_to_process.append(geom)
 
             for geom in geometries_to_process:
@@ -1271,16 +1280,43 @@ class TempestStrikeCoordinator:
                 if len(coords) > 100:
                     step = len(coords) // 100 + 1
                     coords = coords[::step]
-                    if coords and coords[0] != coords[-1]:
+                    if not is_road and coords and coords[0] != coords[-1]:
                         coords.append(coords[0])
 
                 feature = {"coordinates": coords}
+
+                if is_building:
+                    height_val = None
+                    if "height" in tags:
+                        try:
+                            h_str = tags["height"].replace("m", "").strip()
+                            height_val = float(h_str)
+                        except ValueError:
+                            pass
+                    if height_val is None and "building:levels" in tags:
+                        try:
+                            levels = float(tags["building:levels"])
+                            height_val = levels * 3.0
+                        except ValueError:
+                            pass
+                    if height_val is not None:
+                        feature["height"] = round(height_val, 1)
+
                 if is_water:
                     water_features.append(feature)
                 elif is_forest:
                     forest_features.append(feature)
+                elif is_road:
+                    road_features.append(feature)
+                elif is_building:
+                    building_features.append(feature)
 
-        return {"water": water_features[:200], "forest": forest_features[:200]}
+        return {
+            "water": water_features[:200],
+            "forest": forest_features[:200],
+            "road": road_features[:300],
+            "building": building_features[:500],
+        }
 
     async def async_stop(self) -> None:
         """Stop the coordinator and deregister from shared websocket session."""
@@ -1864,7 +1900,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=dc7d605"
+    url = f"{base_url}?v=58a88d2"
 
     existing_item = None
     if hasattr(resources, "async_items"):
