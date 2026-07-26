@@ -1980,20 +1980,20 @@ class WeatherFlowVectorDataView(HomeAssistantView):
                     break
 
         if not coordinator:
-            return self.json({"water": [], "forest": []})
+            return self.json({"water": [], "forest": [], "road": [], "building": []})
 
         primary_coords = coordinator.station_coords.get(coordinator.primary_station)
         if not primary_coords:
             primary_coords = coordinator._get_station_coords(coordinator.primary_station)
 
         if not primary_coords:
-            return self.json({"water": [], "forest": []})
+            return self.json({"water": [], "forest": [], "road": [], "building": []})
 
         ref_lat, ref_lon = primary_coords
 
         safe_primary = str(coordinator.primary_station).replace(",", "_").replace(" ", "_")
         safe_coords = f"{ref_lat}_{ref_lon}".replace(".", "_")
-        cache_filename = f"vector_cache_{safe_primary}_{safe_coords}.json"
+        cache_filename = f"vector_cache_v2_{safe_primary}_{safe_coords}.json"
         cache_path = self.hass.config.path(
             f"custom_components/weatherflow_lightning_trilateration/{cache_filename}"
         )
@@ -2010,4 +2010,4 @@ class WeatherFlowVectorDataView(HomeAssistantView):
         data = await self.hass.async_add_executor_job(_read_cache)
         if data is not None:
             return self.json(data)
-        return self.json({"water": [], "forest": []})
+        return self.json({"water": [], "forest": [], "road": [], "building": []})

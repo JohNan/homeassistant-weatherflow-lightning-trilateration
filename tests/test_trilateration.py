@@ -246,8 +246,8 @@ def test_osm_vector_cache_invalidation(mock_hass, mock_entry):
     remove_mock = MagicMock()
     listdir_mock = MagicMock(
         return_value=[
-            "vector_cache_172103_59_847_17_61482.json",
-            "vector_cache_172103_different.json",
+            "vector_cache_v2_172103_59_847_17_61482.json",
+            "vector_cache_v2_172103_different.json",
         ]
     )
 
@@ -279,13 +279,13 @@ def test_osm_vector_cache_invalidation(mock_hass, mock_entry):
         asyncio.run(coordinator._async_fetch_vector_data())
 
         # Check cache filename constructed correctly
-        assert any("vector_cache_172103_59_847_17_61482.json" in p for p in paths_queried)
+        assert any("vector_cache_v2_172103_59_847_17_61482.json" in p for p in paths_queried)
 
-        # Verify old cache cleanup was called (vector_cache_172103_different.json should be removed)
-        # Verify vector_cache_172103_59_847_17_61482.json was NOT removed
+        # Verify old cache cleanup was called (vector_cache_v2_172103_different.json should be removed)
+        # Verify vector_cache_v2_172103_59_847_17_61482.json was NOT removed
         remove_calls = [c[0][0] for c in remove_mock.call_args_list]
-        assert any("vector_cache_172103_different.json" in rc for rc in remove_calls)
-        assert not any("vector_cache_172103_59_847_17_61482.json" in rc for rc in remove_calls)
+        assert any("vector_cache_v2_172103_different.json" in rc for rc in remove_calls)
+        assert not any("vector_cache_v2_172103_59_847_17_61482.json" in rc for rc in remove_calls)
 
 
 def test_mlat_calculation_n4(mock_hass, mock_entry):
