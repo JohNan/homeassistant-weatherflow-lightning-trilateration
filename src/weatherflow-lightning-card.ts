@@ -1056,7 +1056,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       return;
     }
     if (this.terrainMapMesh) this.terrainMapMesh.visible = true;
-    const zoom = 10;
+    const zoom = 12;
     const spanKm = MAP_SIZE_KM;
 
     const latSpan = spanKm / KM_PER_DEGREE_LAT;
@@ -1080,14 +1080,15 @@ class WeatherFlowLightningCard extends HTMLElement {
     const y0 = Math.floor(lat2tile(maxLat, zoom));
     const y1 = Math.floor(lat2tile(minLat, zoom));
 
+    const canvasSize = 2048;
     const canvas = document.createElement('canvas');
-    canvas.width = 1024;
-    canvas.height = 1024;
+    canvas.width = canvasSize;
+    canvas.height = canvasSize;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     ctx.fillStyle = '#050b14';
-    ctx.fillRect(0, 0, 1024, 1024);
+    ctx.fillRect(0, 0, canvasSize, canvasSize);
 
     const promises = [];
 
@@ -1103,10 +1104,10 @@ class WeatherFlowLightningCard extends HTMLElement {
         const bottomPct = (tileMinLat - minLat) / (maxLat - minLat);
         const topPct = (tileMaxLat - minLat) / (maxLat - minLat);
 
-        const dx = leftPct * 1024;
-        const dy = (1.0 - topPct) * 1024;
-        const dw = (rightPct - leftPct) * 1024;
-        const dh = (topPct - bottomPct) * 1024;
+        const dx = leftPct * canvasSize;
+        const dy = (1.0 - topPct) * canvasSize;
+        const dw = (rightPct - leftPct) * canvasSize;
+        const dh = (topPct - bottomPct) * canvasSize;
 
         const tileUrl = `https://basemaps.cartocdn.com/dark_all/${zoom}/${x}/${y}.png`;
 
