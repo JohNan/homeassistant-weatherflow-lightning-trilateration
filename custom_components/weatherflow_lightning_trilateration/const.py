@@ -9,13 +9,23 @@ CONF_NEIGHBOR_STATIONS = "neighbor_stations"
 CONF_API_TOKEN = "api_token"
 CONF_NAME = "name"
 CONF_DISTANCE_FILTER = "distance_filter"
+CONF_MAX_TRILATERATION_RESIDUAL_KM = "max_trilateration_residual_km"
+CONF_MIN_STATIONS_FOR_TRILATERATION = "min_stations_for_trilateration"
+CONF_STRIKE_MARKER_TTL_SEC = "strike_marker_ttl_sec"
+CONF_STRIKE_BUCKET_SETTLE_SEC = "strike_bucket_settle_sec"
 
 # Maximum acceptable per-station distance residual (km) for a trilateration
 # result to be trusted. If the distance from the computed location back to any
 # reporting station differs from that station's reported distance by more than
 # this, the readings are mutually inconsistent (coarse/noisy data or fabricated
 # coordinates) and the fix is discarded instead of being reported as "success".
-MAX_TRILATERATION_RESIDUAL_KM = 5.0
+# Kept fairly generous (rather than the ~5 km one might expect from station GPS
+# accuracy alone) because the lightning detection network's per-strike distance
+# reports carry real-world measurement noise, and an overly tight bound was
+# causing a large share of otherwise-plausible strikes to be flagged
+# "unreliable" and discarded. Exposed as an option (CONF_MAX_TRILATERATION_RESIDUAL_KM)
+# so it can be tuned per-installation; this is only the default.
+MAX_TRILATERATION_RESIDUAL_KM = 15.0
 
 # How long raw per-station strike observations are retained (seconds) so a
 # backfill/replay can be run later. Defaults to 7 days.
@@ -26,6 +36,8 @@ STORAGE_KEY_RAW_STRIKES = "weatherflow_lightning_trilateration.raw_strikes"
 STORAGE_VERSION = 1
 
 # Active strike marker lifetime (seconds); markers older than this are pruned.
+# Exposed as an option (CONF_STRIKE_MARKER_TTL_SEC) so it can be tuned
+# per-installation; this is only the default.
 STRIKE_MARKER_TTL_SEC = 21600
 
 # How long a cached OSM vector-data file is considered fresh (seconds).
@@ -36,8 +48,12 @@ VECTOR_CACHE_TTL_SEC = 7 * 24 * 3600
 # the same trilateration bucket, and the bucket is solved this many seconds
 # after the first strike arrives, allowing all reporting stations to check in.
 STRIKE_BUCKET_TOLERANCE_SEC = 3
+# Exposed as an option (CONF_STRIKE_BUCKET_SETTLE_SEC) so it can be tuned
+# per-installation; this is only the default.
 STRIKE_BUCKET_SETTLE_SEC = 3.0
 # Buckets older than this (relative to the newest strike) are force-evicted.
 STRIKE_BUCKET_MAX_AGE_SEC = 10
 # Minimum number of stations with resolved coordinates required to trilaterate.
+# Exposed as an option (CONF_MIN_STATIONS_FOR_TRILATERATION) so it can be tuned
+# per-installation; this is only the default.
 MIN_STATIONS_FOR_TRILATERATION = 3

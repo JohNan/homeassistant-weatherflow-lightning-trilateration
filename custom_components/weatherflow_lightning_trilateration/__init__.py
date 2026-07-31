@@ -29,9 +29,13 @@ except ImportError:  # pragma: no cover - depends on installed websockets versio
 from .const import (
     CONF_API_TOKEN,
     CONF_DISTANCE_FILTER,
+    CONF_MAX_TRILATERATION_RESIDUAL_KM,
+    CONF_MIN_STATIONS_FOR_TRILATERATION,
     CONF_NAME,
     CONF_NEIGHBOR_STATIONS,
     CONF_PRIMARY_STATION,
+    CONF_STRIKE_BUCKET_SETTLE_SEC,
+    CONF_STRIKE_MARKER_TTL_SEC,
     DOMAIN,
     EVENT_STRIKE_CALCULATED,
     MAX_TRILATERATION_RESIDUAL_KM,
@@ -42,6 +46,7 @@ from .const import (
     STRIKE_BUCKET_MAX_AGE_SEC,
     STRIKE_BUCKET_SETTLE_SEC,
     STRIKE_BUCKET_TOLERANCE_SEC,
+    STRIKE_MARKER_TTL_SEC,
     VECTOR_CACHE_TTL_SEC,
     WS_ENDPOINT,
 )
@@ -560,6 +565,22 @@ class TempestStrikeCoordinator:
             entry.options.get(CONF_API_TOKEN, entry.data.get(CONF_API_TOKEN, ""))
         ).strip()
         self.distance_filter = float(entry.options.get(CONF_DISTANCE_FILTER, 100.0))
+        self.max_trilateration_residual_km = float(
+            entry.options.get(
+                CONF_MAX_TRILATERATION_RESIDUAL_KM, MAX_TRILATERATION_RESIDUAL_KM
+            )
+        )
+        self.min_stations_for_trilateration = int(
+            entry.options.get(
+                CONF_MIN_STATIONS_FOR_TRILATERATION, MIN_STATIONS_FOR_TRILATERATION
+            )
+        )
+        self.strike_marker_ttl_sec = int(
+            entry.options.get(CONF_STRIKE_MARKER_TTL_SEC, STRIKE_MARKER_TTL_SEC)
+        )
+        self.strike_bucket_settle_sec = float(
+            entry.options.get(CONF_STRIKE_BUCKET_SETTLE_SEC, STRIKE_BUCKET_SETTLE_SEC)
+        )
         self.all_stations = [self.primary_station] + self.neighbor_stations
 
         # Parse coordinate if primary station is coordinates
@@ -1599,7 +1620,7 @@ class TempestStrikeCoordinator:
                     name = self.station_names.get(dev_id, dev_id)
                     station_info.append(f"{name} ({dist} km)")
 
-                if len(strike_events) >= MIN_STATIONS_FOR_TRILATERATION:
+                if len(strike_events) >= self.min_stations_for_trilateration:
                     _LOGGER.debug(
                         "Invoking MLAT calculation with coordinates/distances: %s", strike_events
                     )
@@ -1614,14 +1635,14 @@ class TempestStrikeCoordinator:
                         "Trilateration could not be calculated: only %d stations reported this strike "
                         "(minimum %d required). Reporting stations: %s",
                         len(strike_events),
-                        MIN_STATIONS_FOR_TRILATERATION,
+                        self.min_stations_for_trilateration,
                         ", ".join(station_info),
                     )
                     self.last_trilateration_status = "insufficient_stations"
                     self.last_trilateration_timestamp = float(matched_timestamp)
                     self.last_trilateration_error = (
                         f"Only {len(strike_events)} stations reported this strike "
-                        f"(minimum {MIN_STATIONS_FOR_TRILATERATION} required)."
+                        f"(minimum {self.min_stations_for_trilateration} required)."
                     )
                     self.last_trilateration_reporting = station_info
                     self.async_update_listeners()
@@ -1630,7 +1651,7 @@ class TempestStrikeCoordinator:
                 del self.strike_buffer[matched_timestamp]
 
             # Allow time to collect all N reporting stations before solving.
-            timer = async_call_later(self.hass, STRIKE_BUCKET_SETTLE_SEC, _process_bucket)
+            timer = async_call_later(self.hass, self.strike_bucket_settle_sec, _process_bucket)
             self._strike_timers[matched_timestamp] = timer
 
         self.strike_buffer[matched_timestamp][station_id] = distance
@@ -1715,7 +1736,7 @@ class TempestStrikeCoordinator:
             )
             max_residual = max(max_residual, abs(actual - d_s))
 
-        if max_residual > MAX_TRILATERATION_RESIDUAL_KM:
+        if max_residual > self.max_trilateration_residual_km:
             return calculated_latitude, calculated_longitude, "unreliable", max_residual
 
         return calculated_latitude, calculated_longitude, "success", max_residual
@@ -1765,7 +1786,7 @@ class TempestStrikeCoordinator:
                 lat,
                 lon,
                 residual,
-                MAX_TRILATERATION_RESIDUAL_KM,
+                self.max_trilateration_residual_km,
             )
             self.last_trilateration_status = "unreliable"
             self.last_trilateration_error = (
