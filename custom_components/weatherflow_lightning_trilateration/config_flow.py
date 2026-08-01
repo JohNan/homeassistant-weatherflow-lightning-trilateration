@@ -201,9 +201,7 @@ class TempestTrilaterationOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_MIN_STATIONS_FOR_TRILATERATION, MIN_STATIONS_FOR_TRILATERATION
         )
         current_marker_ttl = options.get(CONF_STRIKE_MARKER_TTL_SEC, STRIKE_MARKER_TTL_SEC)
-        current_bucket_settle = options.get(
-            CONF_STRIKE_BUCKET_SETTLE_SEC, STRIKE_BUCKET_SETTLE_SEC
-        )
+        current_bucket_settle = options.get(CONF_STRIKE_BUCKET_SETTLE_SEC, STRIKE_BUCKET_SETTLE_SEC)
 
         data_schema = vol.Schema(
             {
@@ -218,9 +216,9 @@ class TempestTrilaterationOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_MIN_STATIONS_FOR_TRILATERATION, default=current_min_stations
                 ): vol.All(vol.Coerce(int), vol.Range(min=3)),
-                vol.Optional(
-                    CONF_STRIKE_MARKER_TTL_SEC, default=current_marker_ttl
-                ): vol.Coerce(int),
+                vol.Optional(CONF_STRIKE_MARKER_TTL_SEC, default=current_marker_ttl): vol.Coerce(
+                    int
+                ),
                 vol.Optional(
                     CONF_STRIKE_BUCKET_SETTLE_SEC, default=current_bucket_settle
                 ): vol.Coerce(float),

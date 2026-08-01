@@ -566,14 +566,10 @@ class TempestStrikeCoordinator:
         ).strip()
         self.distance_filter = float(entry.options.get(CONF_DISTANCE_FILTER, 100.0))
         self.max_trilateration_residual_km = float(
-            entry.options.get(
-                CONF_MAX_TRILATERATION_RESIDUAL_KM, MAX_TRILATERATION_RESIDUAL_KM
-            )
+            entry.options.get(CONF_MAX_TRILATERATION_RESIDUAL_KM, MAX_TRILATERATION_RESIDUAL_KM)
         )
         self.min_stations_for_trilateration = int(
-            entry.options.get(
-                CONF_MIN_STATIONS_FOR_TRILATERATION, MIN_STATIONS_FOR_TRILATERATION
-            )
+            entry.options.get(CONF_MIN_STATIONS_FOR_TRILATERATION, MIN_STATIONS_FOR_TRILATERATION)
         )
         self.strike_marker_ttl_sec = int(
             entry.options.get(CONF_STRIKE_MARKER_TTL_SEC, STRIKE_MARKER_TTL_SEC)
