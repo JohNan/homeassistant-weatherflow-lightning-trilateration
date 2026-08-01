@@ -10,7 +10,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
 from . import event_key
-from .const import CONF_NAME, STRIKE_MARKER_TTL_SEC
+from .const import CONF_NAME, CONF_STRIKE_MARKER_TTL_SEC, STRIKE_MARKER_TTL_SEC
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,9 +21,10 @@ STORAGE_VERSION = 1
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities) -> None:
     """Set up the geo_location platform for WeatherFlow Lightning Trilateration."""
     instance_name = str(entry.data.get(CONF_NAME, entry.entry_id[:8])).strip()
+    marker_ttl_sec = int(entry.options.get(CONF_STRIKE_MARKER_TTL_SEC, STRIKE_MARKER_TTL_SEC))
 
     # Initialize strike storage
-    storage = WeatherFlowStrikeStorage(hass, entry.entry_id)
+    storage = WeatherFlowStrikeStorage(hass, entry.entry_id, marker_ttl_sec)
     await storage.async_load()
     hass.data.setdefault("weatherflow_lightning_trilateration_storage", {})[
         entry.entry_id
@@ -36,13 +37,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     for strike in storage.strikes:
         age = current_time - strike["time"]
-        if age < STRIKE_MARKER_TTL_SEC:
+        if age < marker_ttl_sec:
             valid_strikes.append(strike)
             entity = WeatherFlowLightningStrikeEntity(
                 strike["latitude"],
                 strike["longitude"],
                 strike["time"],
-                STRIKE_MARKER_TTL_SEC - age,
+                marker_ttl_sec - age,
                 storage,
                 instance_name,
                 strike.get("stations", []),
@@ -69,7 +70,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if timestamp is None:
             timestamp = time.time()
 
-        remaining = STRIKE_MARKER_TTL_SEC - (time.time() - timestamp)
+        remaining = marker_ttl_sec - (time.time() - timestamp)
         if remaining <= 0:
             # Strike is already older than the retention window; nothing to show.
             return
@@ -94,11 +95,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 class WeatherFlowStrikeStorage:
     """Manages persistence of active lightning strikes."""
 
-    def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry_id: str, marker_ttl_sec: int = STRIKE_MARKER_TTL_SEC
+    ) -> None:
         """Initialize the storage helper."""
         self.hass = hass
         self.store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}_{entry_id}")
         self.strikes = []
+        self.marker_ttl_sec = marker_ttl_sec
 
     async def async_load(self) -> None:
         """Load strikes from store."""
@@ -140,7 +144,7 @@ class WeatherFlowStrikeStorage:
     def _schedule_save(self) -> None:
         """Schedule a coalesced serialization of active strikes."""
         current_time = time.time()
-        self.strikes = [s for s in self.strikes if current_time - s["time"] < STRIKE_MARKER_TTL_SEC]
+        self.strikes = [s for s in self.strikes if current_time - s["time"] < self.marker_ttl_sec]
         # Coalesce bursts of adds/removes (e.g. during a storm) into one write.
         self.store.async_delay_save(lambda: {"strikes": self.strikes}, 5)
 

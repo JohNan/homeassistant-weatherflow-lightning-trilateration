@@ -25,7 +25,20 @@
         "data": {
           "neighbor_stations": "Neighboring Stations (comma-separated IDs)",
           "api_token": "API Token (Personal Access Token)",
-          "distance_filter": "Max Station Distance (km)"
+          "distance_filter": "Max Station Distance (km)",
+          "max_trilateration_residual_km": "Max Location Error Tolerance (km)",
+          "min_stations_for_trilateration": "Minimum Stations Required",
+          "strike_marker_ttl_sec": "Map Marker Lifetime (seconds)",
+          "strike_bucket_settle_sec": "Station Wait Time (seconds)"
+        },
+        "data_description": {
+          "neighbor_stations": "Comma-separated list of nearby Tempest station IDs to use for trilateration, e.g. '81149, 12345'. At least 2 are needed alongside the primary station.",
+          "api_token": "Your WeatherFlow Personal Access Token, used to resolve station coordinates and device IDs.",
+          "distance_filter": "Neighboring stations farther than this from the primary station are ignored, so distant stations don't skew the calculation.",
+          "max_trilateration_residual_km": "How far the calculated strike location is allowed to be from what each reporting station's distance implies. If lots of strikes end up marked 'Unreliable', try raising this value; lower it for stricter, more precise fixes.",
+          "min_stations_for_trilateration": "How many stations must report the same strike before a location can be calculated. A trilateration fix mathematically requires at least 3.",
+          "strike_marker_ttl_sec": "How long a strike stays shown as a marker on the map before it's removed. The default of 21600 seconds equals 6 hours.",
+          "strike_bucket_settle_sec": "How long to wait after the first station reports a strike before calculating its location, giving the other stations time to also check in. Increase it on slower/laggier setups if strikes are calculated before all stations report."
         }
       }
     }

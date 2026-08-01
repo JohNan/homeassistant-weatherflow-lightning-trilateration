@@ -304,15 +304,39 @@
         renderer.setSize(container.clientWidth, container.clientHeight);
         renderer.setClearColor(0x02040a, 1);
         renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         container.appendChild(renderer.domElement);
 
         // --- Lights ---
-        const ambientLight = new THREE.AmbientLight(0x0f172a, 1.5);
+        // Hemisphere light softly tints the scene with a cooler "sky" color from
+        // above and a darker "ground" color from below, which reads far more
+        // naturally than flat ambient light on outdoor/terrain scenes.
+        const hemiLight = new THREE.HemisphereLight(0x1e3a5f, 0x030507, 0.9);
+        scene.add(hemiLight);
+
+        const ambientLight = new THREE.AmbientLight(0x0f172a, 0.6);
         scene.add(ambientLight);
 
         const dirLight = new THREE.DirectionalLight(0x38bdf8, 1);
-        dirLight.position.set(5, 10, 7);
+        dirLight.position.set(5, 25, 7);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.set(2048, 2048);
+        dirLight.shadow.camera.near = 1;
+        dirLight.shadow.camera.far = 80;
+        dirLight.shadow.camera.left = -30;
+        dirLight.shadow.camera.right = 30;
+        dirLight.shadow.camera.top = 30;
+        dirLight.shadow.camera.bottom = -30;
+        dirLight.shadow.bias = -0.0015;
         scene.add(dirLight);
+
+        // Strike flash light: dark by default, flares brightly and briefly
+        // whenever a lightning strike lands, casting real-time illumination
+        // across the terrain and station masts like an actual bolt would.
+        const strikeFlashLight = new THREE.PointLight(0xbfe9ff, 0, 60, 2);
+        strikeFlashLight.position.set(0, 6, 0);
+        scene.add(strikeFlashLight);
 
         // --- Starfield ---
         const starsGeo = new THREE.BufferGeometry();
@@ -338,9 +362,96 @@
         const starField = new THREE.Points(starsGeo, starsMat);
         scene.add(starField);
 
+        // --- Canvas Texture Helpers ---
+        // Small helpers that draw gradients/text onto a <canvas> and hand the
+        // result back as a THREE.CanvasTexture, avoiding the need for any
+        // external image assets while still giving objects/overlays real
+        // shading detail instead of flat, uniform colors.
+        function createSkyGradientTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 2;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            const gradient = ctx.createLinearGradient(0, 0, 0, 512);
+            gradient.addColorStop(0, '#02040a');   // zenith - near black
+            gradient.addColorStop(0.55, '#081428'); // mid sky
+            gradient.addColorStop(1, '#12233f');    // horizon glow
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 2, 512);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        function createGroundTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            const gradient = ctx.createRadialGradient(256, 256, 0, 256, 256, 256);
+            gradient.addColorStop(0, '#0a2c42');
+            gradient.addColorStop(0.55, '#051a29');
+            gradient.addColorStop(1, '#010509');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 512, 512);
+            // Subtle speckled texture to break up the flat gradient like terrain noise
+            ctx.globalAlpha = 0.05;
+            for (let i = 0; i < 1200; i++) {
+                ctx.fillStyle = Math.random() > 0.5 ? '#38bdf8' : '#000000';
+                ctx.fillRect(Math.random() * 512, Math.random() * 512, 1.5, 1.5);
+            }
+            ctx.globalAlpha = 1;
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        function createTextSprite(text, color = '#38bdf8', fontSize = 64) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256;
+            canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            ctx.font = `600 ${fontSize}px Outfit, sans-serif`;
+            ctx.fillStyle = color;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 20;
+            ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+            const sprite = new THREE.Sprite(material);
+            sprite.scale.set(3, 1.5, 1);
+            return sprite;
+        }
+
+        // --- Sky Dome ---
+        // A large inward-facing sphere with a vertical gradient replaces the
+        // flat solid background color, giving a sense of atmosphere/horizon
+        // instead of the scene appearing to float in a featureless void.
+        const skyGeo = new THREE.SphereGeometry(300, 32, 32);
+        const skyMat = new THREE.MeshBasicMaterial({
+            map: createSkyGradientTexture(),
+            side: THREE.BackSide,
+            fog: false
+        });
+        const skyDome = new THREE.Mesh(skyGeo, skyMat);
+        scene.add(skyDome);
+
         // --- Programmatic Map Grid (Terrain) ---
-        // Generate a futuristic glowing geographic coordinate grid
+        // Solid ground disc gives the wireframe grid something to sit on top
+        // of, so the grid reads as an overlay on real terrain rather than
+        // hovering over empty space.
         const mapSize = 40;
+        const groundGeo = new THREE.CircleGeometry(mapSize * 0.75, 64);
+        const groundMat = new THREE.MeshStandardMaterial({
+            map: createGroundTexture(),
+            roughness: 1,
+            metalness: 0
+        });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -0.05;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // Generate a futuristic glowing geographic coordinate grid
         const gridGeo = new THREE.PlaneGeometry(mapSize, mapSize, 40, 40);
         const gridMat = new THREE.MeshBasicMaterial({
             color: 0x0c4a6e,
@@ -365,8 +476,91 @@
             const ring = new THREE.Mesh(ringGeo, ringMat);
             ring.rotation.x = -Math.PI / 2;
             ringsGroup.add(ring);
+
+            // Distance label (e.g. "10km") so the rings read as an actual
+            // range scale instead of purely decorative circles
+            const distLabel = createTextSprite(`${r}km`, '#0284c7', 48);
+            distLabel.scale.set(2, 1, 1);
+            distLabel.position.set(r * Math.cos(Math.PI / 4), 0.4, r * Math.sin(Math.PI / 4));
+            ringsGroup.add(distLabel);
         }
         scene.add(ringsGroup);
+
+        // --- Compass Rose ---
+        // Cardinal direction labels anchor the map to real-world geography
+        // (matching the lat/lon math below) instead of leaving orientation
+        // ambiguous, which is a big part of "looking like a real map".
+        const compassGroup = new THREE.Group();
+        const compassRadius = mapSize * 0.42;
+        // +z increases latitude (north), +x increases longitude (east) -
+        // see sceneToLatLon() below.
+        const compassPoints = [
+            { label: 'N', x: 0, z: compassRadius },
+            { label: 'S', x: 0, z: -compassRadius },
+            { label: 'E', x: compassRadius, z: 0 },
+            { label: 'W', x: -compassRadius, z: 0 }
+        ];
+        compassPoints.forEach(p => {
+            const sprite = createTextSprite(p.label, '#e2e8f0', 72);
+            sprite.position.set(p.x, 1.2, p.z);
+            compassGroup.add(sprite);
+        });
+        scene.add(compassGroup);
+
+        // --- Ambient Cloud Layer ---
+        // Soft translucent billboards drifting high above the grid suggest
+        // real atmosphere/weather instead of an empty sky above the action.
+        const cloudGroup = new THREE.Group();
+        function createCloudTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128;
+            canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            const gradient = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+            gradient.addColorStop(0, 'rgba(148,163,184,0.35)');
+            gradient.addColorStop(1, 'rgba(148,163,184,0)');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 128, 128);
+            return new THREE.CanvasTexture(canvas);
+        }
+        const cloudTexture = createCloudTexture();
+        const cloudMat = new THREE.SpriteMaterial({
+            map: cloudTexture,
+            transparent: true,
+            opacity: 0.5,
+            depthWrite: false
+        });
+        for (let i = 0; i < 14; i++) {
+            const cloud = new THREE.Sprite(cloudMat);
+            const scale = 10 + Math.random() * 14;
+            cloud.scale.set(scale, scale * 0.5, 1);
+            cloud.position.set(
+                (Math.random() - 0.5) * 90,
+                18 + Math.random() * 10,
+                (Math.random() - 0.5) * 90
+            );
+            cloudGroup.add(cloud);
+        }
+        scene.add(cloudGroup);
+
+        // --- Geographic Reference ---
+        // All scene units are treated as kilometers on a local flat-earth
+        // approximation centered on REF_LAT/REF_LON. Latitude and longitude
+        // are NOT equivalent in km-per-degree: longitude lines converge
+        // toward the poles, so 1 degree of longitude covers cos(lat) times
+        // fewer kilometers than 1 degree of latitude. Using the same scale
+        // factor for both (as before) distorted real-world proportions.
+        const REF_LAT = 40.0;
+        const REF_LON = -75.0;
+        const KM_PER_DEG_LAT = 111.32;
+        const KM_PER_DEG_LON = KM_PER_DEG_LAT * Math.cos(REF_LAT * Math.PI / 180);
+
+        function sceneToLatLon(x, z) {
+            return {
+                lat: REF_LAT + z / KM_PER_DEG_LAT,
+                lon: REF_LON + x / KM_PER_DEG_LON
+            };
+        }
 
         // --- Weather Stations ---
         // Plot 3 non-collinear stations
@@ -381,6 +575,21 @@
             const group = new THREE.Group();
             group.position.set(st.x, 0, st.z);
 
+            // Physical platform base (small raised deck the mast stands on),
+            // giving the station real solid geometry instead of floating
+            // wireframe shapes with no footprint on the ground.
+            const platformGeo = new THREE.CylinderGeometry(1.1, 1.3, 0.2, 24);
+            const platformMat = new THREE.MeshStandardMaterial({
+                color: 0x1e293b,
+                roughness: 0.7,
+                metalness: 0.3
+            });
+            const platform = new THREE.Mesh(platformGeo, platformMat);
+            platform.position.y = 0.1;
+            platform.castShadow = true;
+            platform.receiveShadow = true;
+            group.add(platform);
+
             // Glowing base ring
             const ringGeo = new THREE.RingGeometry(0.8, 1, 32);
             const ringMat = new THREE.MeshBasicMaterial({
@@ -391,18 +600,41 @@
             });
             const ring = new THREE.Mesh(ringGeo, ringMat);
             ring.rotation.x = -Math.PI / 2;
+            ring.position.y = 0.21;
             group.add(ring);
+            group.userData.pulseRing = ring;
 
-            // Pulsing range cylinder
-            const cylGeo = new THREE.CylinderGeometry(0.1, 0.1, 3, 8);
+            // Sensor mast (tapered pole) instead of a plain glowing cylinder,
+            // reading more like real weather-station hardware
+            const mastGeo = new THREE.CylinderGeometry(0.08, 0.15, 3.2, 8);
+            const mastMat = new THREE.MeshStandardMaterial({
+                color: 0x475569,
+                roughness: 0.5,
+                metalness: 0.6
+            });
+            const mast = new THREE.Mesh(mastGeo, mastMat);
+            mast.position.y = 1.7;
+            mast.castShadow = true;
+            group.add(mast);
+
+            // Pulsing range indicator, kept as a slim glowing accent around the mast
+            const cylGeo = new THREE.CylinderGeometry(0.03, 0.03, 3, 8);
             const cylMat = new THREE.MeshBasicMaterial({
                 color: st.color,
                 transparent: true,
                 opacity: 0.6
             });
             const cyl = new THREE.Mesh(cylGeo, cylMat);
-            cyl.position.y = 1.5;
+            cyl.position.y = 1.7;
             group.add(cyl);
+
+            // Small cross-arm near the top, evoking a real anemometer/antenna mount
+            const armGeo = new THREE.BoxGeometry(0.9, 0.06, 0.06);
+            const armMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.5, roughness: 0.4 });
+            const arm = new THREE.Mesh(armGeo, armMat);
+            arm.position.y = 2.9;
+            arm.castShadow = true;
+            group.add(arm);
 
             // Glow sphere at top
             const sphereGeo = new THREE.SphereGeometry(0.3, 16, 16);
@@ -411,8 +643,15 @@
                 transparent: false
             });
             const sphere = new THREE.Mesh(sphereGeo, sphereMat);
-            sphere.position.y = 3;
+            sphere.position.y = 3.3;
             group.add(sphere);
+
+            // Station ID label floating above the mast, so each station is
+            // identifiable at a glance instead of relying only on color
+            const label = createTextSprite(st.id, '#e2e8f0', 40);
+            label.scale.set(3.2, 1.1, 1);
+            label.position.y = 4.3;
+            group.add(label);
 
             scene.add(group);
             stationMeshes.push({
@@ -557,6 +796,8 @@
                 return `${st.id}: <span class="highlight-cyan">${d.toFixed(2)} km</span>`;
             }).join(', ');
 
+            const { lat: strikeLat, lon: strikeLon } = sceneToLatLon(targetX, targetZ);
+
             const logContainer = document.getElementById('log-container');
             const logEntry = document.createElement('div');
             logEntry.className = 'log-entry';
@@ -564,8 +805,8 @@
                 <div class="log-time">${timestamp} - STRIKE DETECTED</div>
                 <div>Trilateration intersection calculated from 3 stations:</div>
                 <div class="log-details">
-                    Coords: Lat: <span class="highlight-red">${(40.0 + targetZ*0.01).toFixed(6)}</span>, 
-                    Lon: <span class="highlight-red">${(-75.0 + targetX*0.01).toFixed(6)}</span><br>
+                    Coords: Lat: <span class="highlight-red">${strikeLat.toFixed(6)}</span>, 
+                    Lon: <span class="highlight-red">${strikeLon.toFixed(6)}</span><br>
                     Telemetry: ${distances}
                 </div>
             `;
@@ -580,6 +821,11 @@
             let animProgress = 0;
             const strikeDuration = 45; // frames
 
+            // Position the shared strike flash light at the impact point so
+            // it illuminates the ground and nearby station masts, like a real
+            // lightning bolt briefly lighting up its surroundings.
+            strikeFlashLight.position.set(targetX, 4, targetZ);
+
             function animateStrike() {
                 animProgress++;
                 const fraction = animProgress / strikeDuration;
@@ -589,14 +835,17 @@
                     lines.forEach(l => {
                         l.material.opacity = Math.random() > 0.3 ? 1.0 : 0.2;
                     });
+                    strikeFlashLight.intensity = 4 + Math.random() * 4;
                 } else if (fraction < 0.5) {
                     lines.forEach(l => {
                         l.material.opacity = 1.0 - (fraction - 0.2) / 0.3;
                     });
+                    strikeFlashLight.intensity = 4 * (1 - (fraction - 0.2) / 0.3);
                 } else {
                     lines.forEach(l => {
                         if (l.parent) strikeLayer.remove(l);
                     });
+                    strikeFlashLight.intensity = 0;
                 }
 
                 // 2. Expand Ripple Wave
@@ -677,14 +926,16 @@
             starField.rotation.y += 0.0003;
             terrainGrid.rotation.z -= 0.0005;
             ringsGroup.rotation.z += 0.0008;
+            cloudGroup.rotation.y += 0.00015; // gentle drift, like real clouds moving with the wind
 
             // Animate Weather Station pulses
             stationMeshes.forEach(sm => {
                 sm.pulseVal += 0.05;
                 const scale = 1 + Math.sin(sm.pulseVal) * 0.1;
                 // Pulse the rings scale and opacity
-                sm.mesh.children[0].scale.set(scale, scale, 1);
-                sm.mesh.children[0].material.opacity = 0.5 + Math.sin(sm.pulseVal) * 0.3;
+                const pulseRing = sm.mesh.userData.pulseRing;
+                pulseRing.scale.set(scale, scale, 1);
+                pulseRing.material.opacity = 0.5 + Math.sin(sm.pulseVal) * 0.3;
             });
 
             // Handle automatic strikes

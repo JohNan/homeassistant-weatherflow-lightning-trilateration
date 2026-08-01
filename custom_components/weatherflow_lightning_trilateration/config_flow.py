@@ -10,10 +10,18 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import (
     CONF_API_TOKEN,
     CONF_DISTANCE_FILTER,
+    CONF_MAX_TRILATERATION_RESIDUAL_KM,
+    CONF_MIN_STATIONS_FOR_TRILATERATION,
     CONF_NAME,
     CONF_NEIGHBOR_STATIONS,
     CONF_PRIMARY_STATION,
+    CONF_STRIKE_BUCKET_SETTLE_SEC,
+    CONF_STRIKE_MARKER_TTL_SEC,
     DOMAIN,
+    MAX_TRILATERATION_RESIDUAL_KM,
+    MIN_STATIONS_FOR_TRILATERATION,
+    STRIKE_BUCKET_SETTLE_SEC,
+    STRIKE_MARKER_TTL_SEC,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -186,6 +194,14 @@ class TempestTrilaterationOptionsFlowHandler(config_entries.OptionsFlow):
         )
         current_api_token = options.get(CONF_API_TOKEN, data.get(CONF_API_TOKEN, ""))
         current_distance_filter = options.get(CONF_DISTANCE_FILTER, 100.0)
+        current_max_residual = options.get(
+            CONF_MAX_TRILATERATION_RESIDUAL_KM, MAX_TRILATERATION_RESIDUAL_KM
+        )
+        current_min_stations = options.get(
+            CONF_MIN_STATIONS_FOR_TRILATERATION, MIN_STATIONS_FOR_TRILATERATION
+        )
+        current_marker_ttl = options.get(CONF_STRIKE_MARKER_TTL_SEC, STRIKE_MARKER_TTL_SEC)
+        current_bucket_settle = options.get(CONF_STRIKE_BUCKET_SETTLE_SEC, STRIKE_BUCKET_SETTLE_SEC)
 
         data_schema = vol.Schema(
             {
@@ -194,6 +210,18 @@ class TempestTrilaterationOptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(CONF_DISTANCE_FILTER, default=current_distance_filter): vol.Coerce(
                     float
                 ),
+                vol.Optional(
+                    CONF_MAX_TRILATERATION_RESIDUAL_KM, default=current_max_residual
+                ): vol.Coerce(float),
+                vol.Optional(
+                    CONF_MIN_STATIONS_FOR_TRILATERATION, default=current_min_stations
+                ): vol.All(vol.Coerce(int), vol.Range(min=3)),
+                vol.Optional(CONF_STRIKE_MARKER_TTL_SEC, default=current_marker_ttl): vol.Coerce(
+                    int
+                ),
+                vol.Optional(
+                    CONF_STRIKE_BUCKET_SETTLE_SEC, default=current_bucket_settle
+                ): vol.Coerce(float),
             }
         )
 

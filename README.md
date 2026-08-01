@@ -119,6 +119,17 @@ The 3D WebGL Lovelace card is automatically downloaded and served by the integra
    - Configure at least 2 neighboring station IDs.
 5. Click **Submit** to finalize the setup. The integration will automatically query the WeatherFlow API using your token to resolve coordinates and device IDs for all configured neighboring stations.
 
+### Advanced Options
+After setup, click **Configure** on the integration entry to tune these behind-the-scenes values (all have sensible defaults, so most users never need to touch them):
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| **Max Station Distance (km)** | 100 km | Neighboring stations farther than this from the primary station are ignored, so distant stations don't skew the calculation. |
+| **Max Location Error Tolerance (km)** | 15 km | How far the calculated strike location is allowed to be from what each reporting station's distance implies, before the fix is discarded as `unreliable`. Raise this if strikes are often marked `unreliable`; lower it for stricter, more precise fixes. See [Reliability & the `unreliable` status](#reliability--the-unreliable-status). |
+| **Minimum Stations Required** | 3 | How many stations must report the same strike before a location is calculated. Trilateration mathematically requires at least 3, so this is the floor. |
+| **Map Marker Lifetime (seconds)** | 21600 (6 hours) | How long a strike stays shown as a marker on the map before it's removed. |
+| **Station Wait Time (seconds)** | 3 | How long to wait after the first station reports a strike before calculating its location, to give the other stations time to check in. Increase it on slower/laggier setups if strikes are calculated before all stations report. |
+
 ### Dashboard Setup
 Add the custom card to your dashboard code editor:
 ```yaml
@@ -177,9 +188,9 @@ Use the `weatherflow_lightning_trilateration.replay_strikes` service (**Develope
 Replayed strikes are plotted using their **original timestamps** (so map-marker expiry stays correct, and strikes older than 6 hours are skipped), and duplicate markers are suppressed so the service can be run repeatedly without piling up.
 
 ### Reliability & the `unreliable` status
-A strike location is only accepted when the computed position actually agrees with the reported distances. After solving, the great-circle distance from the result back to each reporting station is compared against that station's reported distance; if the worst mismatch exceeds `MAX_TRILATERATION_RESIDUAL_KM` (5 km, in `const.py`), the fix is **discarded** and the Trilateration Status sensor reports `unreliable` instead of `success`. This prevents mutually inconsistent readings (coarse/noisy distances, or stations that are too close together) from placing bogus markers on the map.
+A strike location is only accepted when the computed position actually agrees with the reported distances. After solving, the great-circle distance from the result back to each reporting station is compared against that station's reported distance; if the worst mismatch exceeds the **Max Location Error Tolerance** option (default 15 km, `MAX_TRILATERATION_RESIDUAL_KM` in `const.py`), the fix is **discarded** and the Trilateration Status sensor reports `unreliable` instead of `success`. This prevents mutually inconsistent readings (coarse/noisy distances, or stations that are too close together) from placing bogus markers on the map. The default is intentionally generous rather than tight, since real-world per-strike distance reports from the lightning detection network carry noise; a stricter bound previously caused many otherwise-plausible strikes to be discarded as `unreliable`. If you're still seeing too many `unreliable` results (or want stricter fixes), raise (or lower) it under **Advanced Options**.
 
-> **Tip:** Reliable fixes require at least **3 well-separated stations** reporting mutually consistent distances for the same strike. Stations clustered within a few kilometres of each other, or strikes seen by fewer than 3 stations, will not produce a marker.
+> **Tip:** Reliable fixes require at least the configured **Minimum Stations Required** (default and mathematical floor: 3) well-separated stations reporting mutually consistent distances for the same strike. Stations clustered within a few kilometres of each other, or strikes seen by fewer stations than that, will not produce a marker.
 
 ---
 

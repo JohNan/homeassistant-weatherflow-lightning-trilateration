@@ -17,6 +17,10 @@ mock_http.StaticPathConfig = StaticPathConfig
 
 mock_core = MagicMock()
 mock_core.HomeAssistant = MagicMock
+# The real @callback decorator just marks a function for the HA event loop and
+# returns it unchanged; keep that behavior so decorated closures (e.g. the
+# strike-bucket settle timer) remain callable/inspectable in tests.
+mock_core.callback = lambda func: func
 
 mock_helpers = MagicMock()
 mock_helpers.config_validation = MagicMock()
@@ -33,6 +37,14 @@ class MockSensorEntity:
 
 mock_sensor = MagicMock()
 mock_sensor.SensorEntity = MockSensorEntity
+
+
+class MockGeolocationEvent:
+    pass
+
+
+mock_geo_location = MagicMock()
+mock_geo_location.GeolocationEvent = MockGeolocationEvent
 
 
 class MockConfigFlow:
@@ -58,6 +70,7 @@ mock_homeassistant = MagicMock()
 mock_homeassistant.components = MagicMock()
 mock_homeassistant.components.http = mock_http
 mock_homeassistant.components.sensor = mock_sensor
+mock_homeassistant.components.geo_location = mock_geo_location
 mock_homeassistant.config_entries = mock_config_entries
 mock_homeassistant.core = mock_core
 mock_homeassistant.helpers = mock_helpers
@@ -72,6 +85,7 @@ sys.modules["homeassistant"] = mock_homeassistant
 sys.modules["homeassistant.components"] = mock_homeassistant.components
 sys.modules["homeassistant.components.http"] = mock_http
 sys.modules["homeassistant.components.sensor"] = mock_sensor
+sys.modules["homeassistant.components.geo_location"] = mock_geo_location
 sys.modules["homeassistant.config_entries"] = mock_config_entries
 sys.modules["homeassistant.core"] = mock_core
 sys.modules["homeassistant.helpers"] = mock_helpers
@@ -334,6 +348,80 @@ def test_trilateration_rejects_inconsistent_distances(mock_hass, mock_entry):
 
     assert coordinator.last_trilateration_status == "unreliable"
     mock_hass.bus.async_fire.assert_not_called()
+
+
+def test_max_trilateration_residual_km_option_configurable(mock_hass, mock_entry):
+    """Raising the residual tolerance option accepts fits that would otherwise be unreliable."""
+    mock_entry.options = {"max_trilateration_residual_km": 5000.0}
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    assert coordinator.max_trilateration_residual_km == 5000.0
+
+    # Same inconsistent data as test_trilateration_rejects_inconsistent_distances
+    # (residual ~2555 km), which is "unreliable" at the default 15 km threshold
+    # but accepted once the option is raised past the residual.
+    strike_events = [
+        (59.81914, 17.71636, 12.0),
+        (59.847, 17.61482, 1.0),
+        (59.85486, 17.58534, 10.0),
+    ]
+
+    coordinator._calculate_trilateration(strike_events)
+
+    assert coordinator.last_trilateration_status == "success"
+    mock_hass.bus.async_fire.assert_called_once()
+
+
+def test_min_stations_for_trilateration_option_configurable(mock_hass, mock_entry):
+    """Raising the minimum-stations option requires more reporters before solving."""
+    import custom_components.weatherflow_lightning_trilateration as wf_module
+
+    mock_entry.options = {"min_stations_for_trilateration": 4}
+    coordinator = TempestStrikeCoordinator(mock_hass, mock_entry)
+    assert coordinator.min_stations_for_trilateration == 4
+
+    coordinator.device_to_station = {"a": "S1", "b": "S2", "c": "S3"}
+    coordinator.all_stations = ["S1", "S2", "S3"]
+    coordinator.station_coords = {
+        "S1": (40.0, -75.0),
+        "S2": (40.15, -74.85),
+        "S3": (40.15, -75.15),
+    }
+
+    ts = 1783257210
+    for dev_id, dist in (("a", 10.0), ("b", 12.0), ("c", 14.0)):
+        coordinator._process_incoming_message(
+            {"type": "evt_strike", "device_id": dev_id, "evt": [ts, dist]}
+        )
+
+    # Manually fire the settle timer captured by the mocked async_call_later.
+    settle_callback = wf_module.async_call_later.call_args[0][2]
+    settle_callback(None)
+
+    assert coordinator.last_trilateration_status == "insufficient_stations"
+    assert "minimum 4 required" in coordinator.last_trilateration_error
+    mock_hass.bus.async_fire.assert_not_called()
+
+
+def test_strike_marker_ttl_sec_option_configurable(mock_hass):
+    """The marker-lifetime option controls when stored strikes get pruned."""
+    import time
+
+    from custom_components.weatherflow_lightning_trilateration.geo_location import (
+        WeatherFlowStrikeStorage,
+    )
+
+    storage = WeatherFlowStrikeStorage(mock_hass, "entry_id", marker_ttl_sec=10)
+    now = time.time()
+
+    # A strike younger than the configured 10-second TTL is kept.
+    storage.strikes = [{"latitude": 1.0, "longitude": 2.0, "time": now - 5, "stations": []}]
+    storage._schedule_save()
+    assert len(storage.strikes) == 1
+
+    # A strike older than the configured TTL is pruned.
+    storage.strikes = [{"latitude": 1.0, "longitude": 2.0, "time": now - 20, "stations": []}]
+    storage._schedule_save()
+    assert storage.strikes == []
 
 
 def test_replay_strikes_backfills_markers(mock_hass, mock_entry):
