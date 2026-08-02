@@ -441,6 +441,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
     this.renderer.setClearColor(0x02040a, 1);
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     // [3] ACES filmic tone mapping — prevents blown-out glow/lightning whites
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
@@ -1494,7 +1496,8 @@ class WeatherFlowLightningCard extends HTMLElement {
         avgZ /= validPoints;
 
         const baseHeight = this.getTerrainHeight(avgX, avgZ);
-        const elevScale = (this.config.elevation_scale !== undefined ? parseFloat(this.config.elevation_scale) : 1.5) / 1000;
+        const elevScale =
+          (this.config.elevation_scale !== undefined ? parseFloat(this.config.elevation_scale) : 1.5) / 1000;
         const osmHeight = b.height !== undefined ? b.height : 8.0;
         const extrudeHeight = osmHeight * elevScale;
 
@@ -1508,6 +1511,8 @@ class WeatherFlowLightningCard extends HTMLElement {
         const mesh = new THREE.Mesh(geom, buildingMat);
         mesh.rotation.x = -Math.PI / 2;
         mesh.position.y = baseHeight;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
 
         this.features3DGroup.add(mesh);
       });
@@ -1767,7 +1772,16 @@ class WeatherFlowLightningCard extends HTMLElement {
     this._paintSkyGradient(0); // paint night sky immediately
 
     this.dirLight = new THREE.DirectionalLight(0x38bdf8, 1);
-    this.dirLight.position.set(5, 10, 7);
+    this.dirLight.position.set(5, 25, 7);
+    this.dirLight.castShadow = true;
+    this.dirLight.shadow.mapSize.set(2048, 2048);
+    this.dirLight.shadow.camera.near = 1;
+    this.dirLight.shadow.camera.far = 80;
+    this.dirLight.shadow.camera.left = -30;
+    this.dirLight.shadow.camera.right = 30;
+    this.dirLight.shadow.camera.top = 30;
+    this.dirLight.shadow.camera.bottom = -30;
+    this.dirLight.shadow.bias = -0.0015;
     this.scene.add(this.dirLight);
 
     // Starfield
@@ -1826,6 +1840,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
     this.terrainMesh = new THREE.Mesh(this.terrainGeo, reliefMat);
     this.terrainMesh.rotation.x = -Math.PI / 2;
+    this.terrainMesh.receiveShadow = true;
     this.scene.add(this.terrainMesh);
 
     // Wireframe on the same displaced geometry
@@ -1852,6 +1867,20 @@ class WeatherFlowLightningCard extends HTMLElement {
       group.position.set(st.x, terrainY, st.z);
       group.userData = { station: st };
 
+      // Physical platform base — gives the station real solid footprint on
+      // the terrain instead of hardware appearing to float over the ground.
+      const platformGeo = new THREE.CylinderGeometry(1.1, 1.3, 0.2, 24);
+      const platformMat = new THREE.MeshStandardMaterial({
+        color: 0x1e293b,
+        roughness: 0.7,
+        metalness: 0.3
+      });
+      const platform = new THREE.Mesh(platformGeo, platformMat);
+      platform.position.y = 0.1;
+      platform.castShadow = true;
+      platform.receiveShadow = true;
+      group.add(platform);
+
       const ringGeo = new THREE.RingGeometry(0.8, 1, 32);
       const ringMat = new THREE.MeshBasicMaterial({
         color: st.color,
@@ -1861,26 +1890,49 @@ class WeatherFlowLightningCard extends HTMLElement {
       });
       const ring = new THREE.Mesh(ringGeo, ringMat);
       ring.rotation.x = -Math.PI / 2;
-      ring.position.y = 0.02;
+      ring.position.y = 0.21;
       group.add(ring);
+      group.userData.pulseRing = ring;
 
-      const cylGeo = new THREE.CylinderGeometry(0.08, 0.08, 2.5, 8);
-      const cylMat = new THREE.MeshBasicMaterial({
+      // Tapered sensor mast instead of a uniform-width cylinder — reads
+      // more like real weather-station hardware.
+      const mastGeo = new THREE.CylinderGeometry(0.08, 0.15, 2.5, 8);
+      const mastMat = new THREE.MeshStandardMaterial({
         color: st.color,
+        roughness: 0.5,
+        metalness: 0.4,
         transparent: true,
         opacity: 0.6
       });
-      const cyl = new THREE.Mesh(cylGeo, cylMat);
-      cyl.position.y = 1.25;
+      const cyl = new THREE.Mesh(mastGeo, mastMat);
+      cyl.position.y = 1.35;
+      cyl.castShadow = true;
       group.add(cyl);
+      group.userData.towerCyl = cyl;
+
+      // Small cross-arm near the top, evoking a real anemometer/antenna mount.
+      const armGeo = new THREE.BoxGeometry(0.9, 0.06, 0.06);
+      const armMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.5, roughness: 0.4 });
+      const arm = new THREE.Mesh(armGeo, armMat);
+      arm.position.y = 2.3;
+      arm.castShadow = true;
+      group.add(arm);
 
       const sphereGeo = new THREE.SphereGeometry(0.25, 16, 16);
       const sphereMat = new THREE.MeshBasicMaterial({
         color: st.color
       });
       const sphere = new THREE.Mesh(sphereGeo, sphereMat);
-      sphere.position.y = 2.5;
+      sphere.position.y = 2.7;
       group.add(sphere);
+      group.userData.topSphere = sphere;
+
+      // Station ID label floating above the mast so each station is
+      // identifiable at a glance instead of relying only on color.
+      const label = this.createRingLabelSprite(st.id);
+      label.scale.set(3.2, 1.6, 1);
+      label.position.y = 3.6;
+      group.add(label);
 
       this.scene.add(group);
       this.stationMeshes.push({
@@ -2299,31 +2351,31 @@ class WeatherFlowLightningCard extends HTMLElement {
           scale *= flashScale;
           baseOpacity = Math.min(1.0, baseOpacity + sm.strikeIntensity * 0.5);
 
-          // Flash top sphere (index 2) white and scale it up
-          if (sm.mesh.children && sm.mesh.children[2]) {
-            sm.mesh.children[2].scale.set(flashScale, flashScale, flashScale);
-            sm.mesh.children[2].material.color.setHex(0xffffff);
+          // Flash top sphere white and scale it up
+          if (sm.mesh.userData.topSphere) {
+            sm.mesh.userData.topSphere.scale.set(flashScale, flashScale, flashScale);
+            sm.mesh.userData.topSphere.material.color.setHex(0xffffff);
           }
-          // Flash tower cylinder (index 1) white
-          if (sm.mesh.children && sm.mesh.children[1]) {
-            sm.mesh.children[1].material.color.setHex(0xffffff);
+          // Flash tower/mast white
+          if (sm.mesh.userData.towerCyl) {
+            sm.mesh.userData.towerCyl.material.color.setHex(0xffffff);
           }
         } else {
           // Reset colors and scale to original station color
           const originalColor = sm.mesh.userData.station.color;
-          if (sm.mesh.children && sm.mesh.children[2]) {
-            sm.mesh.children[2].scale.set(1, 1, 1);
-            sm.mesh.children[2].material.color.setHex(originalColor);
+          if (sm.mesh.userData.topSphere) {
+            sm.mesh.userData.topSphere.scale.set(1, 1, 1);
+            sm.mesh.userData.topSphere.material.color.setHex(originalColor);
           }
-          if (sm.mesh.children && sm.mesh.children[1]) {
-            sm.mesh.children[1].scale.set(1, 1, 1);
-            sm.mesh.children[1].material.color.setHex(originalColor);
+          if (sm.mesh.userData.towerCyl) {
+            sm.mesh.userData.towerCyl.scale.set(1, 1, 1);
+            sm.mesh.userData.towerCyl.material.color.setHex(originalColor);
           }
         }
 
-        if (sm.mesh.children && sm.mesh.children[0]) {
-          sm.mesh.children[0].scale.set(scale, scale, 1);
-          sm.mesh.children[0].material.opacity = baseOpacity;
+        if (sm.mesh.userData.pulseRing) {
+          sm.mesh.userData.pulseRing.scale.set(scale, scale, 1);
+          sm.mesh.userData.pulseRing.material.opacity = baseOpacity;
         }
       });
     }
