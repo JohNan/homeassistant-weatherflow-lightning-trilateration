@@ -1681,8 +1681,10 @@ class WeatherFlowLightningCard extends HTMLElement {
           const roofMesh = new THREE.Mesh(roofGeo, roofMat);
           // Local geometry is authored in the extruded box's own X/Y (pre-rotation)
           // space, sitting flush on top of the box, matching the box's own
-          // rotation.x = -PI/2 orientation below.
-          roofMesh.position.set((minX + maxX) / 2, (minZ + maxZ) / 2, extrudeHeight);
+          // rotation.x = -PI/2 orientation below. Local Y is -worldZ (see
+          // shapePoints above), so the footprint's local-Y centre is the
+          // negated average of worldZ, not the raw average.
+          roofMesh.position.set((minX + maxX) / 2, -(minZ + maxZ) / 2, extrudeHeight);
           roofMesh.castShadow = true;
           roofMesh.receiveShadow = true;
           group.add(roofMesh);
