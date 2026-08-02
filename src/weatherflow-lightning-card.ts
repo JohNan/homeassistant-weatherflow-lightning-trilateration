@@ -1820,13 +1820,17 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.terrainGeo.setAttribute('color', new THREE.BufferAttribute(colours, 3));
 
     // [B/D] LAYER 1 — map overlay mesh, now uses displaced geometry to follow the terrain relief
-    const terrainMapMat = new THREE.MeshBasicMaterial({
+    // Uses a lit material (not MeshBasicMaterial) so it actually darkens under
+    // the directional-light shadow instead of ignoring lighting entirely —
+    // this is the layer that is actually visible, so it must receive shadows.
+    const terrainMapMat = new THREE.MeshLambertMaterial({
       color: 0x050b14,
       side: THREE.FrontSide
     });
     this.terrainMapMesh = new THREE.Mesh(this.terrainGeo, terrainMapMat);
     this.terrainMapMesh.rotation.x = -Math.PI / 2;
     this.terrainMapMesh.position.y = -0.005; // [D] just below relief mesh — prevents z-fighting
+    this.terrainMapMesh.receiveShadow = true;
     this.scene.add(this.terrainMapMesh);
 
     // [C] LAYER 2 — displaced relief mesh with hypsometric vertex colouring.
@@ -1867,19 +1871,37 @@ class WeatherFlowLightningCard extends HTMLElement {
       group.position.set(st.x, terrainY, st.z);
       group.userData = { station: st };
 
-      // Physical platform base — gives the station real solid footprint on
-      // the terrain instead of hardware appearing to float over the ground.
-      const platformGeo = new THREE.CylinderGeometry(1.1, 1.3, 0.2, 24);
-      const platformMat = new THREE.MeshStandardMaterial({
-        color: 0x1e293b,
-        roughness: 0.7,
-        metalness: 0.3
+      // Ground anchor — a small tripod mount instead of a wide flat disc, so
+      // the station reads as pole/mast-mounted hardware (like a real Tempest
+      // installation) rather than standing on an oversized landing pad.
+      const hubHeight = 0.15;
+      const footRadius = 0.5;
+      const legLength = Math.sqrt(footRadius * footRadius + hubHeight * hubHeight);
+      const legGeo = new THREE.CylinderGeometry(0.04, 0.05, legLength, 6);
+      const legMat = new THREE.MeshStandardMaterial({
+        color: 0x334155,
+        roughness: 0.6,
+        metalness: 0.5
       });
-      const platform = new THREE.Mesh(platformGeo, platformMat);
-      platform.position.y = 0.1;
-      platform.castShadow = true;
-      platform.receiveShadow = true;
-      group.add(platform);
+      for (let i = 0; i < 3; i++) {
+        const angle = (i / 3) * Math.PI * 2;
+        const footX = Math.cos(angle) * footRadius;
+        const footZ = Math.sin(angle) * footRadius;
+        const leg = new THREE.Mesh(legGeo, legMat);
+        leg.position.set(footX / 2, hubHeight / 2, footZ / 2);
+        const direction = new THREE.Vector3(-footX, hubHeight, -footZ).normalize();
+        leg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+        leg.castShadow = true;
+        leg.receiveShadow = true;
+        group.add(leg);
+      }
+      // Small hub collar where the legs meet the mast base.
+      const hubGeo = new THREE.CylinderGeometry(0.12, 0.14, 0.1, 12);
+      const hub = new THREE.Mesh(hubGeo, legMat);
+      hub.position.y = hubHeight;
+      hub.castShadow = true;
+      hub.receiveShadow = true;
+      group.add(hub);
 
       const ringGeo = new THREE.RingGeometry(0.8, 1, 32);
       const ringMat = new THREE.MeshBasicMaterial({
@@ -1890,7 +1912,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       });
       const ring = new THREE.Mesh(ringGeo, ringMat);
       ring.rotation.x = -Math.PI / 2;
-      ring.position.y = 0.21;
+      ring.position.y = 0.03;
       group.add(ring);
       group.userData.pulseRing = ring;
 
