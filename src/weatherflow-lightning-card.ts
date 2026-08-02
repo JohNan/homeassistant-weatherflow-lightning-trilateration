@@ -3444,6 +3444,26 @@ class WeatherFlowLightningCard extends HTMLElement {
       lines.push(tube);
     });
 
+    // Volumetric light beam — a soft additive-blended cone from the cloud
+    // layer down to the strike point, evoking a bolt-of-light column instead
+    // of just the thin tube geometry above (a cheap stand-in for a true
+    // volumetric/god-ray shader, which isn't available without a
+    // post-processing pipeline in this project's plain three.js UMD bundle).
+    const beamHeight = startPos.y - targetPos.y;
+    const beamGeo = new THREE.CylinderGeometry(0.05, 0.5, beamHeight, 12, 1, true);
+    const beamMat = new THREE.MeshBasicMaterial({
+      map: this.glowTexture,
+      color: 0xbfe9ff,
+      transparent: true,
+      opacity: 0.35,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    const beam = new THREE.Mesh(beamGeo, beamMat);
+    beam.position.set(targetPos.x, targetPos.y + beamHeight / 2, targetPos.z);
+    this.strikeLayer.add(beam);
+
     // Volumetric Glow Sprite
     const spriteMat = new THREE.SpriteMaterial({
       map: this.glowTexture,
@@ -3527,6 +3547,19 @@ class WeatherFlowLightningCard extends HTMLElement {
         if (glowSprite.parent) {
           this.strikeLayer.remove(glowSprite);
           glowSprite.material.dispose();
+        }
+      }
+
+      // Fade the volumetric light beam out over the same window as the main bolt.
+      if (frac < 0.25) {
+        beam.material.opacity = 0.35 * (Math.random() > 0.2 ? 1.0 : 0.4);
+      } else if (frac < 0.5) {
+        beam.material.opacity = 0.35 * (1 - (frac - 0.25) / 0.25);
+      } else {
+        if (beam.parent) {
+          this.strikeLayer.remove(beam);
+          if (beam.geometry) beam.geometry.dispose();
+          if (beam.material) beam.material.dispose();
         }
       }
 
