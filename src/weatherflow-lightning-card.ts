@@ -858,6 +858,58 @@ class WeatherFlowLightningCard extends HTMLElement {
     return texture;
   }
 
+  // A soft, dark radial-gradient decal used as a cheap fake ambient-occlusion
+  // / contact-shadow trick under buildings and stations: this project's
+  // three.js runtime is loaded as a plain UMD bundle (no EffectComposer/SSAO
+  // addon), so instead of a real screen-space AO pass we ground objects with
+  // a flat blob mesh matching their footprint — a common, inexpensive
+  // cartography/game-art substitute that reads convincingly from the card's
+  // fixed oblique camera angle.
+  createContactShadowTexture() {
+    if (this._contactShadowTexture) return this._contactShadowTexture;
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    const texture = new THREE.CanvasTexture(canvas);
+    if (!ctx) return texture;
+
+    const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grad.addColorStop(0, 'rgba(0, 0, 0, 0.55)');
+    grad.addColorStop(0.7, 'rgba(0, 0, 0, 0.25)');
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 64, 64);
+    texture.needsUpdate = true;
+    this._contactShadowTexture = texture;
+    return texture;
+  }
+
+  // Builds a flat, ground-hugging contact-shadow decal mesh of the given
+  // radius (scene units), meant to be added as a child positioned at local
+  // ground level. By default the decal is rotated flat onto the XZ plane
+  // (for use inside normal, unrotated Y-up groups like stations); pass
+  // `flatInXY = true` for groups that are themselves rotated -90° about X
+  // (e.g. extruded buildings), where "flat on the ground" in the child's
+  // own pre-rotation local space is simply the default XY plane.
+  createContactShadowDecal(radius, flatInXY = false) {
+    const geo = new THREE.CircleGeometry(radius, 24);
+    const mat = new THREE.MeshBasicMaterial({
+      map: this.createContactShadowTexture(),
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    if (!flatInXY) {
+      mesh.rotation.x = -Math.PI / 2;
+    }
+    return mesh;
+  }
+
   createRingLabelSprite(text) {
     const canvas = document.createElement('canvas');
     canvas.width = 128;
@@ -1675,6 +1727,14 @@ class WeatherFlowLightningCard extends HTMLElement {
         const footprintD = Math.max(0.001, maxZ - minZ);
         const footprintArea = footprintW * footprintD;
 
+        // Cheap fake-AO contact shadow at the building's base, using the
+        // `flatInXY` variant since this group's local frame is Z-up
+        // pre-rotation (see createContactShadowDecal doc comment).
+        const footprintRadius = Math.sqrt(footprintW * footprintW + footprintD * footprintD) / 2;
+        const buildingShadow = this.createContactShadowDecal(footprintRadius * 1.15, true);
+        buildingShadow.position.set((minX + maxX) / 2, -(minZ + maxZ) / 2, 0.005);
+        group.add(buildingShadow);
+
         if (GABLED_BUILDING_TYPES.has(b.type)) {
           const roofHeight = Math.max(extrudeHeight * 0.35, 0.004);
           const roofGeo = this._buildGableRoofGeometry(footprintW, footprintD, roofHeight);
@@ -2317,6 +2377,13 @@ class WeatherFlowLightningCard extends HTMLElement {
       const terrainY = this.getTerrainHeight(st.x, st.z);
       group.position.set(st.x, terrainY, st.z);
       group.userData = { station: st };
+
+      // Cheap fake-AO contact shadow, grounding the station visually even
+      // where the directional-shadow map doesn't reach (e.g. flat overcast
+      // lighting, or the tripod's own shadow being quite thin).
+      const contactShadow = this.createContactShadowDecal(0.65);
+      contactShadow.position.y = 0.015;
+      group.add(contactShadow);
 
       // Ground anchor — a small tripod mount instead of a wide flat disc, so
       // the station reads as pole/mast-mounted hardware (like a real Tempest
