@@ -105,8 +105,16 @@ class WeatherFlowLightningCard extends HTMLElement {
       show_3d_features: false,
       playback_speed: 120,
       show_height_color: true,
+      show_stars: true,
+      show_clouds: true,
       ...config
     };
+    // Only seed the runtime toggle from config on the very first setConfig()
+    // call — afterwards this.showHeightColor is user-controlled via the HUD
+    // button and must survive unrelated config-editor changes.
+    if (!oldConfig) {
+      this.showHeightColor = this.config.show_height_color !== false;
+    }
     this.playbackSpeed = parseFloat(this.config.playback_speed) || 120;
     if (this.speedSelect) {
       this.speedSelect.value = this.playbackSpeed.toString();
@@ -119,6 +127,10 @@ class WeatherFlowLightningCard extends HTMLElement {
       } else {
         this.container.style.height = height;
       }
+    }
+    if (this.titleEl) {
+      this.titleEl.textContent = this.config.title || '';
+      this.titleEl.style.display = this.config.title ? 'block' : 'none';
     }
     if (this.initialized) {
       this.applyConfigChanges(oldConfig || {});
@@ -192,6 +204,13 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.canopyMaterials = [];
         this.vectorDataLoaded = false;
       }
+    }
+
+    if (this.starField) {
+      this.starField.visible = this.config.show_stars !== false;
+    }
+    if (this.cloudGroup) {
+      this.cloudGroup.visible = this.config.show_clouds !== false;
     }
   }
 
@@ -418,6 +437,17 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.wrapper.style.overflow = 'hidden';
     this.wrapper.style.border = '1px solid rgba(56, 189, 248, 0.15)';
     this.shadowRoot.appendChild(this.wrapper);
+
+    // Optional card title bar (only shown when `title` is set in config)
+    this.titleEl = document.createElement('div');
+    this.titleEl.style.padding = '10px 16px 0';
+    this.titleEl.style.fontSize = '16px';
+    this.titleEl.style.fontWeight = '500';
+    this.titleEl.style.color = 'var(--primary-text-color, #e2e8f0)';
+    this.titleEl.style.fontFamily = 'var(--paper-font-body1_-_font-family, sans-serif)';
+    this.titleEl.textContent = this.config.title || '';
+    this.titleEl.style.display = this.config.title ? 'block' : 'none';
+    this.wrapper.appendChild(this.titleEl);
 
     // Create container
     this.container = document.createElement('div');
@@ -1999,6 +2029,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       opacity: 0.6
     });
     this.starField = new THREE.Points(starsGeo, starsMat);
+    this.starField.visible = this.config.show_stars !== false;
     this.scene.add(this.starField);
 
     // Ambient cloud layer — soft translucent billboards drifting high above
@@ -2028,13 +2059,18 @@ class WeatherFlowLightningCard extends HTMLElement {
       cloud.position.set((Math.random() - 0.5) * 90, 18 + Math.random() * 10, (Math.random() - 0.5) * 90);
       this.cloudGroup.add(cloud);
     }
+    this.cloudGroup.visible = this.config.show_clouds !== false;
     this.scene.add(this.cloudGroup);
 
     // ── Terrain layer stack ──────────────────────────────────────────────
     const mapSize = 40;
 
-    // Define terrainGeo first so both the relief mesh and the map overlay mesh can share it
-    this.terrainGeo = new THREE.PlaneGeometry(mapSize, mapSize, 30, 30);
+    // Define terrainGeo first so both the relief mesh and the map overlay mesh can share it.
+    // Segment count is deliberately higher than the 15x15 elevation sample
+    // grid (getTerrainHeight() interpolates regardless of render resolution)
+    // — a finer subdivision makes the wireframe grid overlay's diagonal
+    // "diamond" pattern noticeably smaller/denser, as requested.
+    this.terrainGeo = new THREE.PlaneGeometry(mapSize, mapSize, 60, 60);
     // Initialise vertex colours (will be repainted in updateTerrainGeometry)
     const vertCount = this.terrainGeo.attributes.position.count;
     const colours = new Float32Array(vertCount * 3);
@@ -3546,6 +3582,22 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
         playbackSpeedInput.value =
           this._config.playback_speed !== undefined ? this._config.playback_speed.toString() : '120';
       }
+      const titleInput = this.shadowRoot.getElementById('title') as HTMLInputElement;
+      if (titleInput) {
+        titleInput.value = this._config.title || '';
+      }
+      const showHeightColorInput = this.shadowRoot.getElementById('show_height_color') as HTMLInputElement;
+      if (showHeightColorInput) {
+        showHeightColorInput.checked = this._config.show_height_color !== false;
+      }
+      const showStarsInput = this.shadowRoot.getElementById('show_stars') as HTMLInputElement;
+      if (showStarsInput) {
+        showStarsInput.checked = this._config.show_stars !== false;
+      }
+      const showCloudsInput = this.shadowRoot.getElementById('show_clouds') as HTMLInputElement;
+      if (showCloudsInput) {
+        showCloudsInput.checked = this._config.show_clouds !== false;
+      }
       this._syncEntityPicker();
     }
   }
@@ -3719,6 +3771,13 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
             <span class="slider"></span>
           </label>
         </div>
+        <div class="config-row">
+          <label for="show_height_color">Show Hypsometric Height-Colour Map</label>
+          <label class="switch">
+            <input type="checkbox" id="show_height_color" ${this._config.show_height_color !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
 
         <div class="section-header">Atmospheric & Telemetry Simulations</div>
         
@@ -3744,6 +3803,20 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
           <label for="show_heatmap">Show Storm Path Heatmap</label>
           <label class="switch">
             <input type="checkbox" id="show_heatmap" ${this._config.show_heatmap !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="config-row">
+          <label for="show_stars">Show Night Starfield</label>
+          <label class="switch">
+            <input type="checkbox" id="show_stars" ${this._config.show_stars !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="config-row">
+          <label for="show_clouds">Show Ambient Cloud Layer</label>
+          <label class="switch">
+            <input type="checkbox" id="show_clouds" ${this._config.show_clouds !== false ? 'checked' : ''}>
             <span class="slider"></span>
           </label>
         </div>
@@ -3810,16 +3883,10 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
   }
 
   _onEntityPicked(entityId: string | null) {
-    // Auto-derive entry_id from the sensor unique_id pattern: sensor.<entry_id>_stations
-    let entry_id: string | undefined;
-    if (entityId && entityId.startsWith('sensor.') && entityId.endsWith('_stations')) {
-      entry_id = entityId.slice('sensor.'.length, -'_stations'.length);
-    }
     const newConfig = {
       ...this._config,
       entity: entityId || undefined,
-      entity_id: entityId || undefined,
-      entry_id: entry_id || undefined
+      entity_id: entityId || undefined
     };
     this.dispatchEvent(
       new CustomEvent('config-changed', {
