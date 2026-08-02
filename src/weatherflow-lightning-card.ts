@@ -55,6 +55,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.lastPlayTickTime = Date.now();
     this.lastInteractionTime = Date.now();
     this.heatmapMeshes = new Map();
+    this.waterMaterials = [];
     this.elevationGrid = [];
     this.glowTexture = null;
     this.heatGeo = null;
@@ -204,6 +205,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.forestFloorMats = [];
         this.canopyMaterials = [];
         this.buildingMeshes = [];
+        this.waterMaterials = [];
         this.vectorDataLoaded = false;
       }
     }
@@ -276,6 +278,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.forestFloorMats = [];
     this.canopyMaterials = [];
     this.buildingMeshes = [];
+    this.waterMaterials = [];
 
     // Dispose Station Meshes
     if (this.stationMeshes) {
@@ -1271,16 +1274,18 @@ class WeatherFlowLightningCard extends HTMLElement {
     // Building LOD state — reset here too since render3DFeatures() also
     // reassigns this.buildingMeshes = [] further below before repopulating it.
     this.buildingMeshes = [];
+    // Water shader materials — reset here too since the section below
+    // reassigns this.waterMaterials = [] right before repopulating it.
+    this.waterMaterials = [];
 
-    // 1. Render Waterbodies (Lakes)
+    // 1. Render Waterbodies (Lakes) — a Fresnel + scrolling-ripple shader
+    // reads far more like real water than a flat translucent fill, so each
+    // lake shares one ShaderMaterial instance whose uTime uniform is
+    // advanced every frame in animateLoop() (see this.waterMaterials).
     if (data.water && Array.isArray(data.water)) {
-      const waterMat = new THREE.MeshPhongMaterial({
-        color: 0x0284c7,
-        transparent: true,
-        opacity: 0.5,
-        side: THREE.DoubleSide,
-        flatShading: true
-      });
+      const waterMat = this._createWaterMaterial();
+      // Tracked so the animate loop can advance uTime for the ripple/fresnel effect.
+      this.waterMaterials.push(waterMat);
 
       data.water.forEach((poly) => {
         if (!poly.coordinates || poly.coordinates.length < 3) return;
@@ -1693,6 +1698,61 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     this.updateForestLOD();
     this.updateBuildingLOD();
+  }
+
+  // Creates a lake water ShaderMaterial with a scrolling dual-sine ripple
+  // pattern perturbing the surface normal, combined with a Fresnel term so
+  // the water brightens/reflects more at grazing view angles and stays a
+  // darker, deeper blue when viewed head-on — reading far more like real
+  // water than a flat translucent fill. `uTime` is advanced every frame by
+  // animateLoop() via this.waterMaterials.
+  _createWaterMaterial() {
+    return new THREE.ShaderMaterial({
+      transparent: true,
+      side: THREE.DoubleSide,
+      uniforms: {
+        uTime: { value: 0 },
+        uDeepColor: { value: new THREE.Color(0x043b6b) },
+        uShallowColor: { value: new THREE.Color(0x38bdf8) },
+        uOpacity: { value: 0.75 }
+      },
+      vertexShader: `
+        varying vec3 vWorldPosition;
+        varying vec3 vNormal;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPos.xyz;
+          vNormal = normalize(normalMatrix * normal);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uDeepColor;
+        uniform vec3 uShallowColor;
+        uniform float uOpacity;
+        varying vec3 vWorldPosition;
+        varying vec3 vNormal;
+
+        void main() {
+          // Two scrolling sine-wave layers at different scales/speeds/directions
+          // approximate a normal-map ripple without needing a texture asset.
+          float wave1 = sin(vWorldPosition.x * 2.2 + vWorldPosition.z * 1.3 + uTime * 0.9);
+          float wave2 = sin(vWorldPosition.x * 4.1 - vWorldPosition.z * 3.0 + uTime * 1.6);
+          vec3 rippleNormal = normalize(vNormal + vec3(wave1 * 0.08, wave2 * 0.08, 0.0));
+
+          vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+          float fresnel = pow(1.0 - clamp(dot(rippleNormal, viewDir), 0.0, 1.0), 3.0);
+
+          vec3 color = mix(uDeepColor, uShallowColor, fresnel);
+          // Small specular-like glints from the ripple pattern itself.
+          float glint = pow(max(wave1 * wave2, 0.0), 4.0) * 0.5;
+          color += vec3(glint);
+
+          gl_FragColor = vec4(color, uOpacity + fresnel * 0.2);
+        }
+      `
+    });
   }
 
   // Builds a simple gabled-roof prism (two sloped rectangular faces meeting
@@ -2836,6 +2896,13 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     if (this.starField) this.starField.rotation.y += 0.0001;
     if (this.cloudGroup) this.cloudGroup.rotation.y += 0.00015; // gentle drift, like real clouds moving with the wind
+
+    // Advance the water ripple/fresnel shader's clock
+    if (this.waterMaterials && this.waterMaterials.length > 0) {
+      this.waterMaterials.forEach((mat) => {
+        mat.uniforms.uTime.value += deltaTime;
+      });
+    }
 
     if (this.stationMeshes) {
       this.stationMeshes.forEach((sm) => {
