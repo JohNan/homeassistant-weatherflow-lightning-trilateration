@@ -1,11 +1,13 @@
+import * as THREE from 'three';
+import { EffectComposer } from './vendor/three-jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from './vendor/three-jsm/postprocessing/RenderPass.js';
+import { SSAOPass } from './vendor/three-jsm/postprocessing/SSAOPass.js';
+
 declare global {
   interface Window {
-    THREE: any;
     customCards: any[];
   }
 }
-
-declare const THREE: any;
 
 // ---- Tunable constants ------------------------------------------------------
 // Equirectangular projection: km-per-degree at the equator, and the mean
@@ -109,6 +111,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       show_height_color: true,
       show_stars: true,
       show_clouds: true,
+      show_ssao: true,
       ...config
     };
     // Only seed the runtime toggle from config on the very first setConfig()
@@ -216,29 +219,16 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (this.cloudGroup) {
       this.cloudGroup.visible = this.config.show_clouds !== false;
     }
+    if (this.ssaoPass) {
+      this.ssaoPass.enabled = this.config.show_ssao !== false;
+    }
   }
 
   connectedCallback() {
-    if (window.THREE) {
-      this.initVisualizer();
-      return;
-    }
-    // Guard against appending a duplicate <script> tag if the element is
-    // rapidly disconnected/reconnected (e.g. moved in the DOM) before the
-    // first script finishes loading.
-    if (this._threeScriptLoading) return;
-    this._threeScriptLoading = true;
-    const script = document.createElement('script');
-    script.src = '/weatherflow_lightning_trilateration/three.min.js';
-    script.onload = () => {
-      this._threeScriptLoading = false;
-      this.initVisualizer();
-    };
-    script.onerror = (err) => {
-      this._threeScriptLoading = false;
-      console.error('WeatherFlow Card: Failed to load three.min.js', err);
-    };
-    document.head.appendChild(script);
+    // three.js (and the vendored postprocessing addons) are bundled directly
+    // into this file at build time (see package.json's `build` script), so
+    // there is no separate runtime script to load/await here.
+    this.initVisualizer();
   }
 
   disconnectedCallback() {
@@ -375,6 +365,19 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.strikeFlashLight = null;
     }
 
+    // SSAO post-processing (composer render targets + SSAOPass's own
+    // internal render targets/materials aren't tracked by disposeHierarchy
+    // since they never enter the scene graph, so dispose them explicitly).
+    if (this.ssaoPass) {
+      this.ssaoPass.dispose();
+      this.ssaoPass = null;
+    }
+    if (this.composer) {
+      this.composer.renderTarget1.dispose();
+      this.composer.renderTarget2.dispose();
+      this.composer = null;
+    }
+
     // Renderer
     if (this.renderer) {
       if (this.renderer.domElement && this.renderer.domElement.parentNode) {
@@ -501,6 +504,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     this.container.appendChild(this.renderer.domElement);
+
+    // Screen-space ambient occlusion post-processing pass — grounds buildings,
+    // trees, and stations with soft contact shadows in creases/corners that the
+    // single directional shadow map alone can't reach, on top of the existing
+    // fake-AO decals. Toggleable via `show_ssao` (default on) since it's the
+    // most GPU-costly visual feature, for lower-end tablets/displays.
+    this.initSSAO();
 
     // Tooltip DOM element creation
     this.tooltip = document.createElement('div');
@@ -825,6 +835,12 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(width, height);
+        if (this.composer) {
+          this.composer.setSize(width, height);
+        }
+        if (this.ssaoPass) {
+          this.ssaoPass.setSize(width, height);
+        }
       }
     });
     this.resizeObserver.observe(this.container);
@@ -858,13 +874,37 @@ class WeatherFlowLightningCard extends HTMLElement {
     return texture;
   }
 
+  // Real screen-space ambient occlusion, using three.js's own EffectComposer
+  // / RenderPass / SSAOPass addons (vendored under src/vendor/three-jsm/ and
+  // bundled at build time — see README's "three.js Provenance" section).
+  // This darkens creases and contact points (under eaves, between trees,
+  // where masts meet the ground) far more convincingly than the directional
+  // shadow map or the fake-AO decals alone, at the cost of an extra
+  // full-screen render pass. `animateLoop()` renders through `this.composer`
+  // whenever this is set up; `applyConfigChanges()`/`cleanupThreeJS()` handle
+  // toggling and teardown.
+  initSSAO() {
+    const width = this.container.clientWidth;
+    const height = this.container.clientHeight;
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+
+    this.ssaoPass = new SSAOPass(this.scene, this.camera, width, height);
+    this.ssaoPass.kernelRadius = 0.35;
+    this.ssaoPass.minDistance = 0.0005;
+    this.ssaoPass.maxDistance = 0.15;
+    this.composer.addPass(this.ssaoPass);
+
+    this.ssaoPass.enabled = this.config.show_ssao !== false;
+  }
+
   // A soft, dark radial-gradient decal used as a cheap fake ambient-occlusion
-  // / contact-shadow trick under buildings and stations: this project's
-  // three.js runtime is loaded as a plain UMD bundle (no EffectComposer/SSAO
-  // addon), so instead of a real screen-space AO pass we ground objects with
-  // a flat blob mesh matching their footprint — a common, inexpensive
-  // cartography/game-art substitute that reads convincingly from the card's
-  // fixed oblique camera angle.
+  // / contact-shadow trick under buildings and stations. This runs alongside
+  // the real SSAOPass (see initSSAO()) rather than replacing it: the decal
+  // guarantees a grounded look immediately at each object's base regardless
+  // of SSAO sample quality/settings, while SSAOPass adds finer, view-dependent
+  // occlusion in creases and between nearby objects that a flat decal can't.
   createContactShadowTexture() {
     if (this._contactShadowTexture) return this._contactShadowTexture;
     const canvas = document.createElement('canvas');
@@ -3017,7 +3057,11 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     if (this.renderer && this.scene && this.camera) {
-      this.renderer.render(this.scene, this.camera);
+      if (this.composer && this.ssaoPass && this.ssaoPass.enabled) {
+        this.composer.render();
+      } else {
+        this.renderer.render(this.scene, this.camera);
+      }
     }
   }
 
@@ -3971,6 +4015,10 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
       if (showCloudsInput) {
         showCloudsInput.checked = this._config.show_clouds !== false;
       }
+      const showSsaoInput = this.shadowRoot.getElementById('show_ssao') as HTMLInputElement;
+      if (showSsaoInput) {
+        showSsaoInput.checked = this._config.show_ssao !== false;
+      }
       this._syncEntityPicker();
     }
   }
@@ -4190,6 +4238,13 @@ class WeatherFlowLightningCardEditor extends HTMLElement {
           <label for="show_clouds">Show Ambient Cloud Layer</label>
           <label class="switch">
             <input type="checkbox" id="show_clouds" ${this._config.show_clouds !== false ? 'checked' : ''}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="config-row">
+          <label for="show_ssao">Show Ambient Occlusion (SSAO)</label>
+          <label class="switch">
+            <input type="checkbox" id="show_ssao" ${this._config.show_ssao !== false ? 'checked' : ''}>
             <span class="slider"></span>
           </label>
         </div>

@@ -49,8 +49,7 @@ custom_components/weatherflow_lightning_trilateration/
 ├── config_flow.py       # Integration setup flow UI logic & auto-discovery
 ├── const.py             # Centralized constant definitions
 ├── dist/
-│   ├── weatherflow-lightning-card.js   # 3D WebGL Lovelace Custom Card (GENERATED, see below)
-│   └── three.min.js                    # Vendored three.js runtime (GENERATED/vendored, see below)
+│   └── weatherflow-lightning-card.js   # 3D WebGL Lovelace Custom Card (GENERATED, see below; bundles three.js)
 ├── geo_location.py      # GeolocationEvent entities for map plotting
 ├── manifest.json        # Integration manifest metadata
 ├── services.yaml        # Field definitions for simulate_* and replay_strikes services
@@ -74,10 +73,10 @@ tsconfig.json            # TypeScript compiler options for src/*.ts
 
 **`dist/weatherflow-lightning-card.js` is generated.** It is produced from
 `src/weatherflow-lightning-card.ts` by running `npm run build` (esbuild bundles
-and minifies the TypeScript source). Do not hand-edit the file in `dist/` —
-edit `src/weatherflow-lightning-card.ts` and rebuild. See
-["three.js provenance"](#threejs-provenance) below for the vendored
-`dist/three.min.js` runtime the card depends on.
+and minifies the TypeScript source, including three.js and the vendored
+postprocessing addons under `src/vendor/three-jsm/` — see
+["three.js provenance"](#threejs-provenance) below). Do not hand-edit the
+file in `dist/` — edit `src/weatherflow-lightning-card.ts` and rebuild.
 
 ---
 
@@ -209,11 +208,11 @@ The integration itself (per `hacs.json`) requires **Home Assistant 2024.10.0** o
 ---
 
 ## three.js Provenance
-The 3D WebGL dashboard card depends on [three.js](https://threejs.org/), vendored directly as a minified blob at `custom_components/weatherflow_lightning_trilateration/dist/three.min.js` (loaded via a plain `<script>` tag; the card source in `src/weatherflow-lightning-card.ts` refers to it through the `THREE` global, not an ES module import).
+The 3D WebGL dashboard card depends on [three.js](https://threejs.org/), imported as a real npm package (`import * as THREE from 'three'` in `src/weatherflow-lightning-card.ts`) and bundled directly into `dist/weatherflow-lightning-card.js` by `npm run build` (esbuild `--bundle`). There is no separate runtime `<script>` tag or global `THREE` to load — the card is self-contained.
 
-- **Vendored version:** `r128` (three.js `0.128.0`, per the `REVISION` string embedded in the minified file and its `Copyright 2010-2021 Three.js Authors` header). This is pinned as a documentation/provenance reference in `package.json`'s `devDependencies` (`"three": "0.128.0"`) even though nothing in the build actually imports the npm `three` package — the build only ever writes the card bundle to `dist/`, it does not touch `dist/three.min.js`.
-- **Updating it:** there is no automated build step for this file. To upgrade, download the matching minified `build/three.min.js` from the desired [three.js release](https://github.com/mrdoob/three.js/releases), replace the vendored file, update the pinned version in `package.json`, and update this section.
-- **`@types/three`** in `package.json` is currently pinned to a much newer `^0.184.1`, which does not match the vendored `0.128.0` runtime. In practice this doesn't cause type-checking errors today because `src/weatherflow-lightning-card.ts` declares `THREE` as `any` rather than importing types from the `three` package — but if that ever changes, `@types/three` should be pinned down to match `0.128.0` first.
+- **Pinned version:** `three` `0.128.0` (in `package.json`'s `dependencies`, since it ships inside the built card). `@types/three` is pinned to the matching `0.128.0` in `devDependencies` so type-checking reflects the actual bundled API surface.
+- **Postprocessing addons:** three.js's `examples/jsm` modules (used for the SSAO post-processing pass — `EffectComposer`, `RenderPass`, `SSAOPass`, and their shader dependencies) are not published as part of the `three` npm package itself, so the needed files are vendored, unmodified, under `src/vendor/three-jsm/` (MIT licensed, see `src/vendor/three-jsm/LICENSE`). They `import` from `'three'` exactly like any other consumer, and esbuild resolves that against the same bundled `three` package — no shims or global aliases involved.
+- **Updating it:** bump the `three` and `@types/three` versions together in `package.json` (`npm install`), then re-vendor `src/vendor/three-jsm/` from the matching [three.js release tag's `examples/jsm`](https://github.com/mrdoob/three.js/tree/master/examples/jsm) if the addon APIs changed, and run `npm run build`.
 
 ---
 
