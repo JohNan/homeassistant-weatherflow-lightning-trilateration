@@ -305,6 +305,11 @@ class WeatherFlowLightningCard extends HTMLElement {
       if (this.starField.geometry) this.starField.geometry.dispose();
       if (this.starField.material) this.starField.material.dispose();
     }
+    if (this.cloudGroup) {
+      this.disposeHierarchy(this.cloudGroup);
+      this.scene.remove(this.cloudGroup);
+      this.cloudGroup = null;
+    }
     if (this._skyDome) {
       this.scene.remove(this._skyDome);
       if (this._skyDome.geometry) this._skyDome.geometry.dispose();
@@ -1808,6 +1813,35 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.starField = new THREE.Points(starsGeo, starsMat);
     this.scene.add(this.starField);
 
+    // Ambient cloud layer — soft translucent billboards drifting high above
+    // the terrain, so the sky isn't empty above the action (matches the
+    // realism pass done on the standalone demo visualization).
+    this.cloudGroup = new THREE.Group();
+    const cloudCanvas = document.createElement('canvas');
+    cloudCanvas.width = 128;
+    cloudCanvas.height = 128;
+    const cloudCtx = cloudCanvas.getContext('2d');
+    const cloudGradient = cloudCtx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    cloudGradient.addColorStop(0, 'rgba(148,163,184,0.35)');
+    cloudGradient.addColorStop(1, 'rgba(148,163,184,0)');
+    cloudCtx.fillStyle = cloudGradient;
+    cloudCtx.fillRect(0, 0, 128, 128);
+    const cloudTexture = new THREE.CanvasTexture(cloudCanvas);
+    const cloudMat = new THREE.SpriteMaterial({
+      map: cloudTexture,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false
+    });
+    for (let i = 0; i < 14; i++) {
+      const cloud = new THREE.Sprite(cloudMat);
+      const scale = 10 + Math.random() * 14;
+      cloud.scale.set(scale, scale * 0.5, 1);
+      cloud.position.set((Math.random() - 0.5) * 90, 18 + Math.random() * 10, (Math.random() - 0.5) * 90);
+      this.cloudGroup.add(cloud);
+    }
+    this.scene.add(this.cloudGroup);
+
     // ── Terrain layer stack ──────────────────────────────────────────────
     const mapSize = 40;
 
@@ -2358,6 +2392,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     if (this.starField) this.starField.rotation.y += 0.0001;
+    if (this.cloudGroup) this.cloudGroup.rotation.y += 0.00015; // gentle drift, like real clouds moving with the wind
 
     if (this.stationMeshes) {
       this.stationMeshes.forEach((sm) => {
