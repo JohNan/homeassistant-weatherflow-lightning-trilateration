@@ -1,6 +1,7 @@
 """Core initialization for WeatherFlow Lightning Trilateration integration."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -1902,6 +1903,24 @@ class TempestStrikeCoordinator:
         return summary
 
 
+def _card_bundle_cache_buster() -> str:
+    """Compute a short hash of the bundled card JS to use as a cache-buster.
+
+    Using a content hash (instead of a hand-maintained version string) guarantees
+    the Lovelace resource URL changes automatically whenever the bundled card is
+    rebuilt, forcing browsers/frontends to fetch the new file instead of serving
+    a stale cached copy.
+    """
+    dist_path = os.path.join(os.path.dirname(__file__), "dist", "weatherflow-lightning-card.js")
+    try:
+        with open(dist_path, "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+        return digest[:8]
+    except OSError:
+        _LOGGER.warning("Could not read %s to compute cache-buster hash", dist_path)
+        return "0"
+
+
 async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
     """Register custom Lovelace resource automatically."""
     lovelace = hass.data.get("lovelace")
@@ -1917,7 +1936,8 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    url = f"{base_url}?v=23a01a4"
+    cache_buster = await hass.async_add_executor_job(_card_bundle_cache_buster)
+    url = f"{base_url}?v={cache_buster}"
 
     existing_item = None
     if hasattr(resources, "async_items"):
