@@ -187,6 +187,8 @@ class WeatherFlowLightningCard extends HTMLElement {
           this.scene.remove(this.features3DGroup);
           this.features3DGroup = null;
         }
+        this.treeInstancedMeshes = [];
+        this.forestFloorMats = [];
         this.vectorDataLoaded = false;
       }
     }
@@ -248,6 +250,8 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.disposeHierarchy(this.features3DGroup);
       this.features3DGroup = null;
     }
+    this.treeInstancedMeshes = [];
+    this.forestFloorMats = [];
 
     // Dispose Station Meshes
     if (this.stationMeshes) {
@@ -393,6 +397,8 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.camera.position.set(this.cameraTarget.x + x, this.cameraTarget.y + y, this.cameraTarget.z + z);
       this.camera.lookAt(this.cameraTarget);
     }
+
+    this.updateForestLOD();
   }
 
   initVisualizer() {
@@ -1218,6 +1224,11 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.features3DGroup = new THREE.Group();
     this.scene.add(this.features3DGroup);
 
+    // Forest LOD state — reset on every rebuild since the meshes/material
+    // referenced below are recreated from scratch each time.
+    this.forestFloorMats = [];
+    this.treeInstancedMeshes = [];
+
     // 1. Render Waterbodies (Lakes)
     if (data.water && Array.isArray(data.water)) {
       const waterMat = new THREE.MeshPhongMaterial({
@@ -1269,6 +1280,9 @@ class WeatherFlowLightningCard extends HTMLElement {
         side: THREE.DoubleSide,
         flatShading: true
       });
+      // Tracked so updateForestLOD() can darken/solidify this shared material
+      // into a "solid forest blob" once zoomed out past FOREST_LOD_ZOOM_THRESHOLD.
+      this.forestFloorMats.push(forestMat);
 
       const pineInstances = [];
       const oakInstances = [];
@@ -1419,12 +1433,16 @@ class WeatherFlowLightningCard extends HTMLElement {
         matrices.forEach((mat, idx) => imTrunk.setMatrixAt(idx, mat));
         imTrunk.instanceMatrix.needsUpdate = true;
         this.features3DGroup.add(imTrunk);
+        // Tracked so updateForestLOD() can hide individual trees once zoomed
+        // out past FOREST_LOD_ZOOM_THRESHOLD, leaving just the forest floor.
+        this.treeInstancedMeshes.push(imTrunk);
 
         for (let i = 0; i < leafGeos.length; i++) {
           const imLeaf = new THREE.InstancedMesh(leafGeos[i], leafMats[i], matrices.length);
           matrices.forEach((mat, idx) => imLeaf.setMatrixAt(idx, mat));
           imLeaf.instanceMatrix.needsUpdate = true;
           this.features3DGroup.add(imLeaf);
+          this.treeInstancedMeshes.push(imLeaf);
         }
       };
 
@@ -1569,6 +1587,35 @@ class WeatherFlowLightningCard extends HTMLElement {
         mesh.receiveShadow = true;
 
         this.features3DGroup.add(mesh);
+      });
+    }
+
+    this.updateForestLOD();
+  }
+
+  // Forest level-of-detail: from far away, thousands of tiny individual
+  // trees read as noise and cost a lot of draw calls, while a real forest
+  // silhouette from a distance is really just a solid green mass. Past
+  // FOREST_LOD_ZOOM_THRESHOLD we hide the individual tree instances and
+  // darken/solidify the (always-present) flat forest-floor polygon so the
+  // patch still reads clearly as "forest"; zooming back in reveals the
+  // individual pine/oak/birch models again. Called on every camera zoom
+  // change and once after (re)building the 3D features.
+  updateForestLOD() {
+    if (!this.treeInstancedMeshes && !this.forestFloorMats) return;
+    const FOREST_LOD_ZOOM_THRESHOLD = 45;
+    const FOREST_LOD_FAR_OPACITY = 0.85;
+    const FOREST_LOD_NEAR_OPACITY = 0.45;
+    const isFar = (this.zoomRadius || 0) > FOREST_LOD_ZOOM_THRESHOLD;
+
+    if (this.treeInstancedMeshes) {
+      this.treeInstancedMeshes.forEach((mesh) => {
+        mesh.visible = !isFar;
+      });
+    }
+    if (this.forestFloorMats) {
+      this.forestFloorMats.forEach((mat) => {
+        mat.opacity = isFar ? FOREST_LOD_FAR_OPACITY : FOREST_LOD_NEAR_OPACITY;
       });
     }
   }
