@@ -1274,7 +1274,49 @@ class WeatherFlowLightningCard extends HTMLElement {
       const oakInstances = [];
       const birchInstances = [];
       let treeCount = 0;
-      const MAX_TREES = 1500;
+      const MAX_TREES = 3000;
+
+      // Tie tree height to the same meters -> scene-unit conversion used for
+      // buildings/terrain (elevation_scale), instead of hand-authored scene
+      // units, so trees and buildings share one physical scale (option 1).
+      // A legibility boost is layered on top because true-to-scale trees at
+      // this default exaggeration are near sub-pixel on a 40km-wide map —
+      // this is a deliberate, documented compromise (option 2), not a bug.
+      const elevScaleForTrees =
+        (this.config.elevation_scale !== undefined ? parseFloat(this.config.elevation_scale) : 1.5) / 1000;
+      const TREE_LEGIBILITY_BOOST = 6;
+      const TREE_REAL_HEIGHT_M = { pine: 20, oak: 15, birch: 18 };
+      // Height (at scale=1) of the hand-authored trunk+canopy geometry for each species below.
+      const TREE_AUTHORED_HEIGHT = { pine: 0.7, oak: 0.55, birch: 0.67 };
+      const TREE_HEIGHT_SCALE = {
+        pine: (TREE_REAL_HEIGHT_M.pine * elevScaleForTrees * TREE_LEGIBILITY_BOOST) / TREE_AUTHORED_HEIGHT.pine,
+        oak: (TREE_REAL_HEIGHT_M.oak * elevScaleForTrees * TREE_LEGIBILITY_BOOST) / TREE_AUTHORED_HEIGHT.oak,
+        birch: (TREE_REAL_HEIGHT_M.birch * elevScaleForTrees * TREE_LEGIBILITY_BOOST) / TREE_AUTHORED_HEIGHT.birch
+      };
+
+      // Picks a species first, then returns its height-scaled matrix so tree
+      // size stays tied to TREE_HEIGHT_SCALE rather than a flat random range.
+      const pushTreeInstance = (cx, y, cz) => {
+        const jitter = 0.85 + Math.random() * 0.4;
+        const rotY = Math.random() * Math.PI * 2;
+        const r = Math.random();
+        const species = r < 0.33 ? 'pine' : r < 0.66 ? 'oak' : 'birch';
+        const scale = TREE_HEIGHT_SCALE[species] * jitter;
+
+        const dummy = new THREE.Object3D();
+        dummy.position.set(cx, y, cz);
+        dummy.rotation.y = rotY;
+        dummy.scale.set(scale, scale, scale);
+        dummy.updateMatrix();
+
+        if (species === 'pine') {
+          pineInstances.push(dummy.matrix.clone());
+        } else if (species === 'oak') {
+          oakInstances.push(dummy.matrix.clone());
+        } else {
+          birchInstances.push(dummy.matrix.clone());
+        }
+      };
 
       const isPointInPolygon = (point, vs) => {
         const x = point[0],
@@ -1334,28 +1376,15 @@ class WeatherFlowLightningCard extends HTMLElement {
           const cx = Math.max(-19.5, Math.min(19.5, sumX / pts.length));
           const cz = Math.max(-19.5, Math.min(19.5, sumZ / pts.length));
           const y = this.getTerrainHeight(cx, cz);
-          const scale = 0.85 + Math.random() * 0.4;
-          const rotY = Math.random() * Math.PI * 2;
-
-          const dummy = new THREE.Object3D();
-          dummy.position.set(cx, y, cz);
-          dummy.rotation.y = rotY;
-          dummy.scale.set(scale, scale, scale);
-          dummy.updateMatrix();
-
-          const r = Math.random();
-          if (r < 0.33) {
-            pineInstances.push(dummy.matrix.clone());
-          } else if (r < 0.66) {
-            oakInstances.push(dummy.matrix.clone());
-          } else {
-            birchInstances.push(dummy.matrix.clone());
-          }
+          pushTreeInstance(cx, y, cz);
           treeCount++;
         }
       });
 
-      const SPACING = 0.45;
+      // Denser sampling grid than before — with height-accurate (smaller)
+      // trees, a denser planting keeps forest patches reading as solid woods
+      // instead of looking sparse/patchy (option 2 legibility compensation).
+      const SPACING = 0.35;
       const MAX_JITTER = SPACING * 0.35;
 
       const isInsideAnyForest = (pt) => {
@@ -1378,24 +1407,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
           if (isInsideAnyForest([cx, cz])) {
             const y = this.getTerrainHeight(cx, cz);
-            const scale = 0.85 + Math.random() * 0.4;
-            const rotY = Math.random() * Math.PI * 2;
-
-            const dummy = new THREE.Object3D();
-            dummy.position.set(cx, y, cz);
-            dummy.rotation.y = rotY;
-            dummy.scale.set(scale, scale, scale);
-            dummy.updateMatrix();
-
-            const r = Math.random();
-            if (r < 0.33) {
-              pineInstances.push(dummy.matrix.clone());
-            } else if (r < 0.66) {
-              oakInstances.push(dummy.matrix.clone());
-            } else {
-              birchInstances.push(dummy.matrix.clone());
-            }
-
+            pushTreeInstance(cx, y, cz);
             treeCount++;
           }
         }
@@ -1424,10 +1436,13 @@ class WeatherFlowLightningCard extends HTMLElement {
         pineTrunkGeo.translate(0, 0.1, 0);
         const pineTrunkMat = new THREE.MeshPhongMaterial({ color: 0x3d2817, flatShading: true }); // dark brown
         const pineLeafMat = new THREE.MeshPhongMaterial({ color: 0x0f3b1b, flatShading: true }); // dark green
+        // Canopy radii widened ~1.3x relative to height so foliage stays
+        // legible now that overall tree height is physically scaled down
+        // (option 2: artistic license on width, not height).
         const pineCones = [
-          new THREE.ConeGeometry(0.18, 0.3, 5).translate(0, 0.3, 0),
-          new THREE.ConeGeometry(0.14, 0.25, 5).translate(0, 0.45, 0),
-          new THREE.ConeGeometry(0.1, 0.2, 5).translate(0, 0.6, 0)
+          new THREE.ConeGeometry(0.18 * 1.3, 0.3, 5).translate(0, 0.3, 0),
+          new THREE.ConeGeometry(0.14 * 1.3, 0.25, 5).translate(0, 0.45, 0),
+          new THREE.ConeGeometry(0.1 * 1.3, 0.2, 5).translate(0, 0.6, 0)
         ];
 
         addInstancedGroup(pineInstances, pineTrunkGeo, pineTrunkMat, pineCones, [
@@ -1443,9 +1458,11 @@ class WeatherFlowLightningCard extends HTMLElement {
         oakTrunkGeo.translate(0, 0.125, 0);
         const oakTrunkMat = new THREE.MeshPhongMaterial({ color: 0x5c4033, flatShading: true }); // warm brown
         const oakLeafMat = new THREE.MeshPhongMaterial({ color: 0x228b22, flatShading: true }); // leafy green
+        // Widened on X/Z only (not Y) so the canopy reads as a fuller crown
+        // without inflating overall tree height (option 2 legibility tweak).
         const oakSpheres = [
-          new THREE.SphereGeometry(0.18, 6, 6).translate(-0.05, 0.3, 0),
-          new THREE.SphereGeometry(0.2, 6, 6).translate(0.05, 0.35, 0)
+          new THREE.SphereGeometry(0.18, 6, 6).scale(1.3, 1, 1.3).translate(-0.05, 0.3, 0),
+          new THREE.SphereGeometry(0.2, 6, 6).scale(1.3, 1, 1.3).translate(0.05, 0.35, 0)
         ];
 
         addInstancedGroup(oakInstances, oakTrunkGeo, oakTrunkMat, oakSpheres, [oakLeafMat, oakLeafMat]);
@@ -1457,9 +1474,10 @@ class WeatherFlowLightningCard extends HTMLElement {
         birchTrunkGeo.translate(0, 0.15, 0);
         const birchTrunkMat = new THREE.MeshPhongMaterial({ color: 0xd3d3d3, flatShading: true }); // light grey
         const birchLeafMat = new THREE.MeshPhongMaterial({ color: 0x90ee90, flatShading: true }); // light green
-        // vertically stretched sphere: scale Y, then translate
+        // Vertically stretched sphere for the classic birch silhouette, with
+        // extra X/Z width for canopy legibility (option 2).
         const birchCanopyGeo = new THREE.SphereGeometry(0.15, 6, 6);
-        birchCanopyGeo.scale(1, 1.8, 1);
+        birchCanopyGeo.scale(1.3, 1.8, 1.3);
         birchCanopyGeo.translate(0, 0.4, 0);
 
         addInstancedGroup(birchInstances, birchTrunkGeo, birchTrunkMat, [birchCanopyGeo], [birchLeafMat]);
