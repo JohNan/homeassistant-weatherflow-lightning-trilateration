@@ -339,6 +339,10 @@ class WeatherFlowLightningCard extends HTMLElement {
     // Lights
     if (this.ambientLight) this.scene.remove(this.ambientLight);
     if (this.dirLight) this.scene.remove(this.dirLight);
+    if (this.strikeFlashLight) {
+      this.scene.remove(this.strikeFlashLight);
+      this.strikeFlashLight = null;
+    }
 
     // Renderer
     if (this.renderer) {
@@ -915,6 +919,25 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.rangeRingsGroup.add(labelSprite);
       this.ringLabels.push({ sprite: labelSprite, r: r });
     });
+
+    // Compass rose — N/S/E/W cardinal labels beyond the outer ring, so the
+    // map orientation is legible at a glance (north = -z, east = +x, matching
+    // the lat/lon → scene coordinate conversion used elsewhere).
+    const compassRadius = radii[radii.length - 1] + 5;
+    const compassPoints = [
+      { label: 'N', x: 0, z: -compassRadius },
+      { label: 'S', x: 0, z: compassRadius },
+      { label: 'E', x: compassRadius, z: 0 },
+      { label: 'W', x: -compassRadius, z: 0 }
+    ];
+    this.compassLabels = [];
+    compassPoints.forEach((p) => {
+      const sprite = this.createRingLabelSprite(p.label);
+      const y = this.getTerrainHeight(p.x, p.z) + 0.5;
+      sprite.position.set(p.x, y, p.z);
+      this.rangeRingsGroup.add(sprite);
+      this.compassLabels.push({ sprite, x: p.x, z: p.z });
+    });
   }
 
   updateRangeRings() {
@@ -972,6 +995,14 @@ class WeatherFlowLightningCard extends HTMLElement {
         const z = -label.r * SIN45;
         const y = this.getTerrainHeight(x, z) + 0.4;
         label.sprite.position.set(x, y, z);
+      });
+    }
+
+    // Update compass rose labels to track the (possibly re-generated) terrain height
+    if (this.compassLabels) {
+      this.compassLabels.forEach((label) => {
+        const y = this.getTerrainHeight(label.x, label.z) + 0.5;
+        label.sprite.position.set(label.x, y, label.z);
       });
     }
   }
@@ -1788,6 +1819,13 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.dirLight.shadow.camera.bottom = -30;
     this.dirLight.shadow.bias = -0.0015;
     this.scene.add(this.dirLight);
+
+    // Strike flash light — a local PointLight that visibly illuminates the
+    // ground/masts near each lightning strike, mimicking a real bolt's
+    // light flash (in addition to the global ambient sky-flash below).
+    this.strikeFlashLight = new THREE.PointLight(0xbfe9ff, 0, 60, 2);
+    this.strikeFlashLight.position.set(0, 6, 0);
+    this.scene.add(this.strikeFlashLight);
 
     // Starfield
     const starsGeo = new THREE.BufferGeometry();
@@ -2802,6 +2840,14 @@ class WeatherFlowLightningCard extends HTMLElement {
     const targetPos = new THREE.Vector3(x, terrainY, z);
     const startPos = new THREE.Vector3(x + (Math.random() - 0.5) * 4, terrainY + 18, z + (Math.random() - 0.5) * 4);
 
+    // Local strike flash light — positioned at the strike site so the
+    // ground/masts nearby are visibly lit up, like a real bolt's flash.
+    const flashPeakIntensity = 4 + Math.random() * 4;
+    if (this.strikeFlashLight) {
+      this.strikeFlashLight.position.set(x, terrainY + 4, z);
+      this.strikeFlashLight.intensity = flashPeakIntensity;
+    }
+
     if (this.stationMeshes) {
       this.stationMeshes.forEach((sm) => {
         const isContributor =
@@ -2940,6 +2986,17 @@ class WeatherFlowLightningCard extends HTMLElement {
         if (glowSprite.parent) {
           this.strikeLayer.remove(glowSprite);
           glowSprite.material.dispose();
+        }
+      }
+
+      // Decay the local strike flash light in step with the glow sprite.
+      if (this.strikeFlashLight) {
+        if (frac < 0.2) {
+          this.strikeFlashLight.intensity = flashPeakIntensity;
+        } else if (frac < 0.5) {
+          this.strikeFlashLight.intensity = flashPeakIntensity * (1 - (frac - 0.2) / 0.3);
+        } else {
+          this.strikeFlashLight.intensity = 0;
         }
       }
 
