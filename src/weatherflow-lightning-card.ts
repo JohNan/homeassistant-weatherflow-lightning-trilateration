@@ -189,6 +189,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         }
         this.treeInstancedMeshes = [];
         this.forestFloorMats = [];
+        this.canopyMaterials = [];
         this.vectorDataLoaded = false;
       }
     }
@@ -252,6 +253,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
     this.treeInstancedMeshes = [];
     this.forestFloorMats = [];
+    this.canopyMaterials = [];
 
     // Dispose Station Meshes
     if (this.stationMeshes) {
@@ -1228,6 +1230,10 @@ class WeatherFlowLightningCard extends HTMLElement {
     // referenced below are recreated from scratch each time.
     this.forestFloorMats = [];
     this.treeInstancedMeshes = [];
+    // Canopy materials tracked so updateDayNightEngine() can tint foliage
+    // warmer/yellower at low sun angles (dusk/dawn), matching the existing
+    // sky/fog tinting.
+    this.canopyMaterials = [];
 
     // 1. Render Waterbodies (Lakes)
     if (data.water && Array.isArray(data.water)) {
@@ -1468,6 +1474,11 @@ class WeatherFlowLightningCard extends HTMLElement {
           pineLeafMat,
           pineLeafMat
         ]);
+        // Base colour cached in userData so updateDayNightEngine() can tint
+        // relative to the original hue rather than compounding tints on top
+        // of a previous tint.
+        pineLeafMat.userData.baseColor = pineLeafMat.color.clone();
+        this.canopyMaterials.push(pineLeafMat);
       }
 
       // Oak
@@ -1484,6 +1495,8 @@ class WeatherFlowLightningCard extends HTMLElement {
         ];
 
         addInstancedGroup(oakInstances, oakTrunkGeo, oakTrunkMat, oakSpheres, [oakLeafMat, oakLeafMat]);
+        oakLeafMat.userData.baseColor = oakLeafMat.color.clone();
+        this.canopyMaterials.push(oakLeafMat);
       }
 
       // Birch
@@ -1499,16 +1512,24 @@ class WeatherFlowLightningCard extends HTMLElement {
         birchCanopyGeo.translate(0, 0.4, 0);
 
         addInstancedGroup(birchInstances, birchTrunkGeo, birchTrunkMat, [birchCanopyGeo], [birchLeafMat]);
+        birchLeafMat.userData.baseColor = birchLeafMat.color.clone();
+        this.canopyMaterials.push(birchLeafMat);
       }
     }
 
     // 3. Render Roads
     if (data.road && Array.isArray(data.road)) {
-      const roadMat = new THREE.LineBasicMaterial({
+      // A thin wireframe line reads as an overlay, not a real road. Roads
+      // are instead built as a flat extruded ribbon that hugs the terrain
+      // height at every point along its path, matching how the forest floor
+      // and building footprints already follow the ground (option: road
+      // width & elevation follow-through).
+      const roadMat = new THREE.MeshLambertMaterial({
         color: 0x475569, // slate grey for roads
         transparent: true,
-        opacity: 0.6
+        opacity: 0.85
       });
+      const ROAD_WIDTH = 0.12; // scene units (~120m at the 1 unit ≈ 1km map scale — a stylised but road-like ribbon)
 
       data.road.forEach((road) => {
         if (!road.coordinates || road.coordinates.length < 2) return;
@@ -1527,9 +1548,10 @@ class WeatherFlowLightningCard extends HTMLElement {
 
         if (points.length < 2) return;
 
-        const roadGeo = new THREE.BufferGeometry().setFromPoints(points);
-        const line = new THREE.Line(roadGeo, roadMat);
-        this.features3DGroup.add(line);
+        const ribbonGeo = this._buildRoadRibbonGeometry(points, ROAD_WIDTH);
+        const mesh = new THREE.Mesh(ribbonGeo, roadMat);
+        mesh.receiveShadow = true;
+        this.features3DGroup.add(mesh);
       });
     }
 
@@ -1618,6 +1640,69 @@ class WeatherFlowLightningCard extends HTMLElement {
         mat.opacity = isFar ? FOREST_LOD_FAR_OPACITY : FOREST_LOD_NEAR_OPACITY;
       });
     }
+  }
+
+  // Builds a flat ribbon (triangle-strip) BufferGeometry that follows an
+  // arbitrary polyline of terrain-hugging points, instead of rendering the
+  // road as a thin 1px wireframe line. For each point, a perpendicular
+  // offset (in the XZ ground plane) of ±width/2 is computed from the
+  // averaged direction of its neighbouring segments, so joints stay welded
+  // together without gaps/overlaps on turns.
+  _buildRoadRibbonGeometry(points, width) {
+    const halfWidth = width / 2;
+    const left = [];
+    const right = [];
+
+    for (let i = 0; i < points.length; i++) {
+      const prev = points[Math.max(0, i - 1)];
+      const next = points[Math.min(points.length - 1, i + 1)];
+
+      // Direction of travel in the XZ plane (Y ignored — perpendicular is
+      // computed on the ground plane so the ribbon keeps a constant width
+      // regardless of terrain slope).
+      let dirX = next.x - prev.x;
+      let dirZ = next.z - prev.z;
+      const len = Math.sqrt(dirX * dirX + dirZ * dirZ) || 1;
+      dirX /= len;
+      dirZ /= len;
+
+      // Perpendicular (rotate direction by 90°)
+      const perpX = -dirZ;
+      const perpZ = dirX;
+
+      const p = points[i];
+      left.push(new THREE.Vector3(p.x + perpX * halfWidth, p.y, p.z + perpZ * halfWidth));
+      right.push(new THREE.Vector3(p.x - perpX * halfWidth, p.y, p.z - perpZ * halfWidth));
+    }
+
+    const positions = [];
+    const normals = [];
+    const uvs = [];
+    for (let i = 0; i < points.length; i++) {
+      positions.push(left[i].x, left[i].y, left[i].z);
+      normals.push(0, 1, 0);
+      uvs.push(0, i / (points.length - 1));
+      positions.push(right[i].x, right[i].y, right[i].z);
+      normals.push(0, 1, 0);
+      uvs.push(1, i / (points.length - 1));
+    }
+
+    const indices = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = i * 2;
+      const b = i * 2 + 1;
+      const c = i * 2 + 2;
+      const d = i * 2 + 3;
+      indices.push(a, b, c);
+      indices.push(b, d, c);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+    return geo;
   }
 
   // [C] Shared helper — maps scaledHeights (scene units) to a hypsometric
@@ -2353,6 +2438,19 @@ class WeatherFlowLightningCard extends HTMLElement {
     this._skyTexture.needsUpdate = true;
   }
 
+  // [14] Tint forest canopy materials warmer/yellower at low sun angles
+  // (sunrise/sunset), reinforcing the same lighting mood already applied to
+  // the sky/horizon and fog. tDusk peaks at 0 (noon/night) and 1 (dusk/dawn).
+  _tintCanopyMaterials(tDusk) {
+    if (!this.canopyMaterials || this.canopyMaterials.length === 0) return;
+    const warmTint = new THREE.Color(0xffa64d);
+    this.canopyMaterials.forEach((mat) => {
+      const base = mat.userData && mat.userData.baseColor;
+      if (!base) return;
+      mat.color.copy(base).lerp(warmTint, tDusk * 0.35);
+    });
+  }
+
   updateDayNightEngine() {
     if (!this.initialized || !this.scene) return;
 
@@ -2380,6 +2478,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.scene.fog.color.copy(defaultBg);
       }
       this._paintSkyGradient(0);
+      this._tintCanopyMaterials(0);
       return;
     }
 
@@ -2453,6 +2552,10 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     // [13] Repaint sky dome gradient
     this._paintSkyGradient(factor);
+
+    // [14] Tint forest canopy warmer/yellower at low sun angles (dusk/dawn)
+    const tDuskCanopy = Math.sin(factor * Math.PI);
+    this._tintCanopyMaterials(tDuskCanopy);
   }
 
   animateLoop() {
