@@ -12,11 +12,12 @@ declare const THREE: any;
 // Earth radius used to convert lat/lon deltas into local scene-grid km.
 const EARTH_RADIUS_KM = 6371.0;
 const KM_PER_DEGREE_LAT = 111.1;
-// The elevation grid supplied by the backend is a 15x15 sample grid (225 cells).
-const ELEVATION_GRID_SIZE = 15;
-const ELEVATION_GRID_MAX_INDEX = ELEVATION_GRID_SIZE - 1; // 14
-const ELEVATION_GRID_CELL_COUNT = ELEVATION_GRID_SIZE * ELEVATION_GRID_SIZE; // 225
-const ELEVATION_GRID_CENTER_INDEX = Math.floor(ELEVATION_GRID_MAX_INDEX / 2); // 7
+// The elevation grid supplied by the backend is a 21x21 sample grid (441 cells)
+// of real DEM data (Open-Meteo, chunked to respect its 100-coordinate-per-request limit).
+const ELEVATION_GRID_SIZE = 21;
+const ELEVATION_GRID_MAX_INDEX = ELEVATION_GRID_SIZE - 1; // 20
+const ELEVATION_GRID_CELL_COUNT = ELEVATION_GRID_SIZE * ELEVATION_GRID_SIZE; // 441
+const ELEVATION_GRID_CENTER_INDEX = Math.floor(ELEVATION_GRID_MAX_INDEX / 2); // 10
 // Local scene grid spans a 40km-wide square centered on the reference station.
 const MAP_SIZE_KM = 40;
 const MAP_HALF_SIZE_KM = MAP_SIZE_KM / 2;

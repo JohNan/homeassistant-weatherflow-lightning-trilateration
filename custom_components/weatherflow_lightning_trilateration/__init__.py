@@ -1051,9 +1051,18 @@ class TempestStrikeCoordinator:
 
         ref_lat, ref_lon = primary_coords
 
-        # Define grid dimensions: 15x15 points spanning 40km
-        grid_size = 15
+        # Define grid dimensions spanning 40km. Grid density was previously
+        # capped at 15x15 (225 cells), but the Open-Meteo elevation endpoint
+        # only accepts up to 100 coordinates per request — a single 225-point
+        # request has always been silently rejected with HTTP 400, so
+        # `elevation_grid` ended up empty and the card fell back to fake
+        # procedural terrain instead of the real DEM data. Requests are now
+        # chunked to respect that limit, which also lets us safely increase
+        # the grid to 21x21 (441 cells) for a noticeably smoother, more
+        # geographically accurate terrain mesh.
+        grid_size = 21
         span_km = 40.0
+        MAX_COORDS_PER_REQUEST = 100
 
         # Calculate latitude and longitude ranges
         lat_span = span_km / 111.1
@@ -1070,24 +1079,43 @@ class TempestStrikeCoordinator:
                 lons.append(f"{lon:.5f}")
 
         url = "https://api.open-meteo.com/v1/elevation"
-        params = {"latitude": ",".join(lats), "longitude": ",".join(lons)}
+        session = async_get_clientsession(self.hass)
+        elevations: list[float] = []
 
         try:
-            session = async_get_clientsession(self.hass)
-            _LOGGER.debug("Querying Open-Meteo elevation grid api...")
-            async with session.get(url, params=params, timeout=15) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    self.elevation_grid = data.get("elevation", [])
-                    _LOGGER.info(
-                        "Successfully fetched %d elevation points for the terrain grid",
-                        len(self.elevation_grid),
-                    )
-                else:
-                    _LOGGER.warning(
-                        "Failed to query Open-Meteo elevation API: HTTP %d",
-                        response.status,
-                    )
+            for start in range(0, len(lats), MAX_COORDS_PER_REQUEST):
+                batch_lats = lats[start : start + MAX_COORDS_PER_REQUEST]
+                batch_lons = lons[start : start + MAX_COORDS_PER_REQUEST]
+                params = {"latitude": ",".join(batch_lats), "longitude": ",".join(batch_lons)}
+
+                _LOGGER.debug(
+                    "Querying Open-Meteo elevation grid api (%d/%d points)...",
+                    start + len(batch_lats),
+                    len(lats),
+                )
+                async with session.get(url, params=params, timeout=15) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        elevations.extend(data.get("elevation", []))
+                    else:
+                        _LOGGER.warning(
+                            "Failed to query Open-Meteo elevation API: HTTP %d",
+                            response.status,
+                        )
+                        return
+
+            if len(elevations) == len(lats):
+                self.elevation_grid = elevations
+                _LOGGER.info(
+                    "Successfully fetched %d elevation points for the terrain grid",
+                    len(self.elevation_grid),
+                )
+            else:
+                _LOGGER.warning(
+                    "Elevation grid fetch returned %d of %d expected points; discarding",
+                    len(elevations),
+                    len(lats),
+                )
         except Exception as e:
             _LOGGER.error("Error fetching elevation grid: %s", e)
 
@@ -1319,6 +1347,12 @@ class TempestStrikeCoordinator:
                             pass
                     if height_val is not None:
                         feature["height"] = round(height_val, 1)
+                    # Expose the OSM building type so the frontend can pick a
+                    # matching roof shape (gabled for houses, flat for
+                    # commercial/industrial, etc.) instead of one generic box.
+                    building_tag = tags.get("building")
+                    if building_tag and building_tag != "yes":
+                        feature["type"] = building_tag
 
                 if is_water:
                     water_features.append(feature)
