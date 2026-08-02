@@ -2275,17 +2275,56 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.windParticles.visible = false;
   }
 
+  // Converts a compass bearing in degrees (0 = North, clockwise) into an
+  // 8-point compass abbreviation, used by the HUD's "Nearest Strike" row.
+  _bearingToCompass(deg) {
+    const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    const idx = Math.round((((deg % 360) + 360) % 360) / 45) % 8;
+    return dirs[idx];
+  }
+
+  // Finds the closest strike currently in strikeHistory (scene coordinates
+  // are km relative to the reference station at the origin), returning its
+  // distance in km, compass bearing, and how long ago it struck. Powers the
+  // HUD's "Nearest Strike" row.
+  _getNearestStrikeInfo() {
+    if (!this.strikeHistory || this.strikeHistory.length === 0) return null;
+    let nearest = null;
+    let nearestDist = Infinity;
+    for (const s of this.strikeHistory) {
+      const dist = Math.sqrt(s.x * s.x + s.z * s.z);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = s;
+      }
+    }
+    if (!nearest) return null;
+    // North = -z, East = +x (matches the compass rose / lat-lon convention
+    // already used throughout the card).
+    const bearingDeg = (Math.atan2(nearest.x, -nearest.z) * 180) / Math.PI;
+    const ageSec = Math.max(0, Math.round((Date.now() - nearest.time) / 1000));
+    return { distanceKm: nearestDist, compass: this._bearingToCompass(bearingDeg), ageSec };
+  }
+
   updateWeatherOverlay() {
     if (!this.weatherOverlay) return;
 
     const windSpeedStr = (this.windSpeed || 0).toFixed(1);
     const rainRateStr = (this.rainRate || 0).toFixed(1);
     const windDir = this.windDirection || 0;
+    const solarRadiationStr = Math.round(this.solarRadiation || 0).toString();
+
+    const nowMs = Date.now();
+    const strikesLastHour = (this.strikeHistory || []).filter((s) => nowMs - s.time <= 3600000).length;
+    const nearestStrike = this._getNearestStrikeInfo();
+    const nearestStrikeStr = nearestStrike
+      ? `${nearestStrike.distanceKm.toFixed(1)} km ${nearestStrike.compass} · ${nearestStrike.ageSec}s ago`
+      : 'None nearby';
 
     // Skip the innerHTML rebuild when nothing displayed would actually
     // change — `set hass` calls this on every state update, but the HUD
     // content (rounded values, collapsed state, colour toggle) rarely does.
-    const signature = `${this.hudCollapsed ? 1 : 0}|${this.showHeightColor ? 1 : 0}|${windSpeedStr}|${rainRateStr}|${windDir}`;
+    const signature = `${this.hudCollapsed ? 1 : 0}|${this.showHeightColor ? 1 : 0}|${windSpeedStr}|${rainRateStr}|${windDir}|${solarRadiationStr}|${strikesLastHour}|${nearestStrikeStr}`;
     if (this._lastWeatherOverlaySignature === signature) return;
     this._lastWeatherOverlaySignature = signature;
 
@@ -2352,6 +2391,41 @@ class WeatherFlowLightningCard extends HTMLElement {
           <div class="hud-data">
             <div class="hud-label">Precipitation</div>
             <div class="hud-value">${rainRateStr} mm/h</div>
+          </div>
+        </div>
+        <div class="hud-row">
+          <div class="hud-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="5"/>
+              <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+            </svg>
+          </div>
+          <div class="hud-data">
+            <div class="hud-label">Solar Radiation</div>
+            <div class="hud-value">${solarRadiationStr} W/m²</div>
+          </div>
+        </div>
+        <div class="hud-row">
+          <div class="hud-icon" style="color: ${nearestStrike ? '#facc15' : '#38bdf8'};">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </div>
+          <div class="hud-data">
+            <div class="hud-label">Nearest Strike</div>
+            <div class="hud-value">${nearestStrikeStr}</div>
+          </div>
+        </div>
+        <div class="hud-row">
+          <div class="hud-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>
+              <circle cx="19" cy="5" r="2"/>
+            </svg>
+          </div>
+          <div class="hud-data">
+            <div class="hud-label">Strikes (1h)</div>
+            <div class="hud-value">${strikesLastHour}</div>
           </div>
         </div>
       </div>
@@ -3366,7 +3440,6 @@ class WeatherFlowLightningCard extends HTMLElement {
       this.rainRate = attrs.rain_rate !== undefined ? parseFloat(attrs.rain_rate) : 0.0;
 
       this.updateDayNightEngine();
-      this.updateWeatherOverlay();
 
       // Track individual station sensor strike count increases (live mode flash)
       if (!this.lastStationStrikes) {
@@ -3501,6 +3574,10 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.knownStrikes.delete(id);
       }
     }
+
+    // Refreshed after strikeHistory sync above so the HUD's nearest-strike
+    // and strikes-per-hour rows reflect the latest data, not the previous cycle's.
+    this.updateWeatherOverlay();
   }
 
   getCardSize() {
