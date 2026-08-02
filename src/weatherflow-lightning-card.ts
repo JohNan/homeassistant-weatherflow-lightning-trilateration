@@ -203,6 +203,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.treeInstancedMeshes = [];
         this.forestFloorMats = [];
         this.canopyMaterials = [];
+        this.buildingMeshes = [];
         this.vectorDataLoaded = false;
       }
     }
@@ -274,6 +275,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.treeInstancedMeshes = [];
     this.forestFloorMats = [];
     this.canopyMaterials = [];
+    this.buildingMeshes = [];
 
     // Dispose Station Meshes
     if (this.stationMeshes) {
@@ -421,6 +423,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     this.updateForestLOD();
+    this.updateBuildingLOD();
   }
 
   initVisualizer() {
@@ -1265,6 +1268,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     // warmer/yellower at low sun angles (dusk/dawn), matching the existing
     // sky/fog tinting.
     this.canopyMaterials = [];
+    // Building LOD state — reset here too since render3DFeatures() also
+    // reassigns this.buildingMeshes = [] further below before repopulating it.
+    this.buildingMeshes = [];
 
     // 1. Render Waterbodies (Lakes)
     if (data.water && Array.isArray(data.water)) {
@@ -1587,6 +1593,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     // 4. Render Buildings (Extruded 3D shapes)
+    // Tracked so updateBuildingLOD() can hide small/far buildings when
+    // zoomed out, matching the same LOD principle already used for trees.
+    this.buildingMeshes = [];
     if (data.building && Array.isArray(data.building)) {
       const buildingMat = new THREE.MeshPhongMaterial({
         color: 0x1e293b, // dark slate for buildings
@@ -1594,6 +1603,14 @@ class WeatherFlowLightningCard extends HTMLElement {
         opacity: 0.7,
         flatShading: true
       });
+      // Houses/residential buildings get a gabled roof instead of a flat
+      // slab top — a simple but effective realism win driven by the OSM
+      // `building` tag exposed by the backend.
+      const roofMat = new THREE.MeshPhongMaterial({
+        color: 0x7f1d1d, // brick-red roof tiles
+        flatShading: true
+      });
+      const GABLED_BUILDING_TYPES = new Set(['house', 'residential', 'detached', 'semidetached_house', 'terrace']);
 
       data.building.forEach((b) => {
         if (!b.coordinates || b.coordinates.length < 3) return;
@@ -1601,6 +1618,10 @@ class WeatherFlowLightningCard extends HTMLElement {
         const shapePoints = [];
         let avgX = 0;
         let avgZ = 0;
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minZ = Infinity;
+        let maxZ = -Infinity;
         let validPoints = 0;
 
         b.coordinates.forEach((pt) => {
@@ -1613,6 +1634,10 @@ class WeatherFlowLightningCard extends HTMLElement {
           shapePoints.push(new THREE.Vector2(x, -worldZ));
           avgX += x;
           avgZ += worldZ;
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minZ = Math.min(minZ, worldZ);
+          maxZ = Math.max(maxZ, worldZ);
           validPoints++;
         });
 
@@ -1633,17 +1658,118 @@ class WeatherFlowLightningCard extends HTMLElement {
         };
 
         const geom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+        const group = new THREE.Group();
         const mesh = new THREE.Mesh(geom, buildingMat);
-        mesh.rotation.x = -Math.PI / 2;
-        mesh.position.y = baseHeight;
         mesh.castShadow = true;
         mesh.receiveShadow = true;
+        group.add(mesh);
 
-        this.features3DGroup.add(mesh);
+        // Footprint width/depth used both for the gabled-roof approximation
+        // and for the building LOD's "is this big enough to matter" check.
+        const footprintW = Math.max(0.001, maxX - minX);
+        const footprintD = Math.max(0.001, maxZ - minZ);
+        const footprintArea = footprintW * footprintD;
+
+        if (GABLED_BUILDING_TYPES.has(b.type)) {
+          const roofHeight = Math.max(extrudeHeight * 0.35, 0.004);
+          const roofGeo = this._buildGableRoofGeometry(footprintW, footprintD, roofHeight);
+          const roofMesh = new THREE.Mesh(roofGeo, roofMat);
+          // Local geometry is authored in the extruded box's own X/Y (pre-rotation)
+          // space, sitting flush on top of the box, matching the box's own
+          // rotation.x = -PI/2 orientation below.
+          roofMesh.position.set((minX + maxX) / 2, (minZ + maxZ) / 2, extrudeHeight);
+          roofMesh.castShadow = true;
+          roofMesh.receiveShadow = true;
+          group.add(roofMesh);
+        }
+
+        group.rotation.x = -Math.PI / 2;
+        group.position.y = baseHeight;
+
+        this.features3DGroup.add(group);
+        this.buildingMeshes.push({ group, footprintArea });
       });
     }
 
     this.updateForestLOD();
+    this.updateBuildingLOD();
+  }
+
+  // Builds a simple gabled-roof prism (two sloped rectangular faces meeting
+  // at a ridge, plus two triangular gable-end faces) sized to a building's
+  // footprint bounding box. Authored in the same local X/Y ground-plane
+  // space as the building's ExtrudeGeometry (pre -PI/2 X-rotation), with
+  // Z as "up" locally, so it can be parented flush on top of the box.
+  _buildGableRoofGeometry(width, depth, height) {
+    const hw = width / 2;
+    const hd = depth / 2;
+    // Ridge runs along the longer axis for a more plausible roofline.
+    const ridgeAlongX = width >= depth;
+
+    let vertices;
+    if (ridgeAlongX) {
+      vertices = [
+        [-hw, -hd, 0],
+        [hw, -hd, 0],
+        [hw, hd, 0],
+        [-hw, hd, 0], // base rectangle (0..3)
+        [-hw, 0, height],
+        [hw, 0, height] // ridge line (4..5)
+      ];
+    } else {
+      vertices = [
+        [-hw, -hd, 0],
+        [hw, -hd, 0],
+        [hw, hd, 0],
+        [-hw, hd, 0],
+        [0, -hd, height],
+        [0, hd, height]
+      ];
+    }
+
+    const positions = [];
+    const pushTri = (a, b, c) => {
+      positions.push(...vertices[a], ...vertices[b], ...vertices[c]);
+    };
+
+    if (ridgeAlongX) {
+      // Two sloped rectangular faces
+      pushTri(0, 1, 5);
+      pushTri(0, 5, 4);
+      pushTri(3, 4, 5);
+      pushTri(3, 5, 2);
+      // Gable-end triangles
+      pushTri(0, 4, 3);
+      pushTri(1, 2, 5);
+    } else {
+      pushTri(0, 4, 3);
+      pushTri(4, 5, 3);
+      pushTri(1, 2, 5);
+      pushTri(1, 5, 4);
+      pushTri(0, 1, 4);
+      pushTri(3, 5, 2);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  // Building level-of-detail: small/generic buildings barely register once
+  // zoomed out, so past BUILDING_LOD_ZOOM_THRESHOLD we hide any building
+  // whose footprint area is below BUILDING_LOD_MIN_AREA, keeping only the
+  // larger, more visually significant structures — improving both draw-call
+  // count and map legibility at low zoom (same principle as updateForestLOD()).
+  updateBuildingLOD() {
+    if (!this.buildingMeshes || this.buildingMeshes.length === 0) return;
+    const BUILDING_LOD_ZOOM_THRESHOLD = 45;
+    const BUILDING_LOD_MIN_AREA = 0.02; // scene-unit² (~20,000 m² at 1 unit ≈ 1km)
+    const isFar = (this.zoomRadius || 0) > BUILDING_LOD_ZOOM_THRESHOLD;
+
+    this.buildingMeshes.forEach(({ group, footprintArea }) => {
+      group.visible = !isFar || footprintArea >= BUILDING_LOD_MIN_AREA;
+    });
   }
 
   // Forest level-of-detail: from far away, thousands of tiny individual
