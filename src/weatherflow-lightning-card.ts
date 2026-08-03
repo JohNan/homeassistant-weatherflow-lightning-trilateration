@@ -2,12 +2,63 @@ import * as THREE from 'three';
 import { EffectComposer } from './vendor/three-jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from './vendor/three-jsm/postprocessing/RenderPass.js';
 import { SSAOPass } from './vendor/three-jsm/postprocessing/SSAOPass.js';
+import { ShaderPass } from './vendor/three-jsm/postprocessing/ShaderPass.js';
 
 declare global {
   interface Window {
     customCards: any[];
   }
 }
+
+// Shader definition for dynamic Tilt-Shift (Depth of Field) post-processing
+const TiltShiftShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uAmount: { value: 0.0 },
+    uFocusPos: { value: 0.5 },
+    uFocusWidth: { value: 0.25 }
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float uAmount;
+    uniform float uFocusPos;
+    uniform float uFocusWidth;
+    varying vec2 vUv;
+
+    void main() {
+      vec4 color = texture2D(tDiffuse, vUv);
+      if (uAmount <= 0.0001) {
+        gl_FragColor = color;
+        return;
+      }
+      float dist = abs(vUv.y - uFocusPos);
+      float blur = smoothstep(uFocusWidth * 0.5, uFocusWidth * 1.5, dist) * uAmount;
+      if (blur <= 0.0001) {
+        gl_FragColor = color;
+        return;
+      }
+
+      vec4 sum = vec4(0.0);
+      sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y - 4.0 * blur)) * 0.051;
+      sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y - 3.0 * blur)) * 0.0918;
+      sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y - 2.0 * blur)) * 0.12245;
+      sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y - 1.0 * blur)) * 0.1531;
+      sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y)) * 0.1633;
+      sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y + 1.0 * blur)) * 0.1531;
+      sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y + 2.0 * blur)) * 0.12245;
+      sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y + 3.0 * blur)) * 0.0918;
+      sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y + 4.0 * blur)) * 0.051;
+      gl_FragColor = sum;
+    }
+  `
+};
 
 // ---- Tunable constants ------------------------------------------------------
 // Equirectangular projection: km-per-degree at the equator, and the mean
@@ -431,6 +482,23 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.updateForestLOD();
     this.updateBuildingLOD();
     this.updateStationScale();
+
+    // Dynamic Shadow Camera Tightening: contract frustum bounds around focus target when zoomed in
+    if (this.dirLight && this.dirLight.shadow && this.cameraTarget) {
+      const frustumSize = Math.max(10, Math.min(32, this.zoomRadius * 0.65));
+      const dCam = this.dirLight.shadow.camera;
+      dCam.left = -frustumSize;
+      dCam.right = frustumSize;
+      dCam.top = frustumSize;
+      dCam.bottom = -frustumSize;
+      dCam.updateProjectionMatrix();
+    }
+
+    // Dynamic Tilt-Shift Depth of Field: apply subtle lens blur at close zoom
+    if (this.tiltShiftPass && this.tiltShiftPass.uniforms && this.tiltShiftPass.uniforms.uAmount) {
+      const blurFactor = Math.max(0, Math.min(1, (32.0 - this.zoomRadius) / 22.0));
+      this.tiltShiftPass.uniforms.uAmount.value = blurFactor * 0.003;
+    }
   }
 
   initVisualizer() {
@@ -896,8 +964,11 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.ssaoPass.minDistance = 0.0005;
     this.ssaoPass.maxDistance = 0.15;
     this.composer.addPass(this.ssaoPass);
-
     this.ssaoPass.enabled = this.config.show_ssao !== false;
+
+    // Tilt-shift depth of field post-processing pass
+    this.tiltShiftPass = new ShaderPass(TiltShiftShader);
+    this.composer.addPass(this.tiltShiftPass);
   }
 
   // A soft, dark radial-gradient decal used as a cheap fake ambient-occlusion
@@ -2074,10 +2145,12 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     const posAttr = this.terrainGeo.attributes.position;
     const colAttr = this.terrainGeo.attributes.color;
+    const normAttr = this.terrainGeo.attributes.normal;
     if (!colAttr) return;
 
     const count = posAttr.count;
     const showHeightColor = this.showHeightColor !== false;
+    const rockColor = { r: 0.24, g: 0.25, b: 0.28 };
 
     for (let i = 0; i < count; i++) {
       if (!showHeightColor) {
@@ -2088,7 +2161,21 @@ class WeatherFlowLightningCard extends HTMLElement {
         const vy = posAttr.getY(i);
         const h = this.getTerrainHeight(vx, -vy);
         const t = (h - minH) / range;
-        const col = lerpStop(Math.max(0, Math.min(1, t)));
+        let col = lerpStop(Math.max(0, Math.min(1, t)));
+
+        // Slope-based cliff blending: steep inclines transition to exposed rock/slate
+        if (normAttr) {
+          const nz = Math.abs(normAttr.getZ(i));
+          const slope = Math.max(0, Math.min(1, (1.0 - nz - 0.15) / 0.35));
+          if (slope > 0) {
+            const rockBlend = Math.pow(slope, 1.2) * 0.75;
+            col = {
+              r: col.r * (1.0 - rockBlend) + rockColor.r * rockBlend,
+              g: col.g * (1.0 - rockBlend) + rockColor.g * rockBlend,
+              b: col.b * (1.0 - rockBlend) + rockColor.b * rockBlend
+            };
+          }
+        }
         colAttr.setXYZ(i, col.r, col.g, col.b);
       }
     }
@@ -2574,8 +2661,6 @@ class WeatherFlowLightningCard extends HTMLElement {
       windPositions[i + 1] = Math.random() * 8;
       windPositions[i + 2] = (Math.random() - 0.5) * 40;
     }
-    windGeo.setAttribute('position', new THREE.BufferAttribute(windPositions, 3));
-
     const windMat = new THREE.PointsMaterial({
       color: 0x38bdf8,
       size: 0.1,
@@ -2586,6 +2671,73 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.windParticles = new THREE.Points(windGeo, windMat);
     this.scene.add(this.windParticles);
     this.windParticles.visible = false;
+
+    // Volumetric procedural cloud deck layer
+    this._addVolumetricCloudDeck();
+  }
+
+  // Procedural cloud deck at high altitude (Y=18.0)
+  _addVolumetricCloudDeck() {
+    const cloudGeo = new THREE.PlaneGeometry(80, 80, 16, 16);
+    const cloudMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      uniforms: {
+        uTime: { value: 0.0 },
+        uOpacity: { value: 0.35 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uOpacity;
+        varying vec2 vUv;
+
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
+
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+                     mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+        }
+
+        float fbm(vec2 p) {
+          float v = 0.0;
+          float a = 0.5;
+          for (int i = 0; i < 3; i++) {
+            v += a * noise(p);
+            p *= 2.0;
+            a *= 0.5;
+          }
+          return v;
+        }
+
+        void main() {
+          vec2 p = vUv * 6.0 + vec2(uTime * 0.02, uTime * 0.01);
+          float n = fbm(p);
+          float alpha = smoothstep(0.35, 0.75, n) * uOpacity;
+          vec3 col = mix(vec3(0.12, 0.18, 0.28), vec3(0.85, 0.9, 0.95), n);
+          gl_FragColor = vec4(col, alpha);
+        }
+      `
+    });
+
+    const cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
+    cloudMesh.rotation.x = -Math.PI / 2;
+    cloudMesh.position.y = 18.0;
+    this.cloudMesh = cloudMesh;
+    this.cloudMaterial = cloudMat;
+    this.scene.add(cloudMesh);
   }
 
   // Converts a compass bearing in degrees (0 = North, clockwise) into an
@@ -2747,6 +2899,10 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   updateWeatherSystem(deltaTime) {
     if (!this.initialized) return;
+
+    if (this.cloudMaterial && this.cloudMaterial.uniforms && this.cloudMaterial.uniforms.uTime) {
+      this.cloudMaterial.uniforms.uTime.value += deltaTime * 0.2;
+    }
 
     const showWeather = this.config.show_weather !== false;
     const showRain = showWeather && this.rainRate > 0;
