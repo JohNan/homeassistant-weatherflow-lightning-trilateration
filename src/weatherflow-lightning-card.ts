@@ -430,6 +430,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     this.updateForestLOD();
     this.updateBuildingLOD();
+    this.updateStationScale();
   }
 
   initVisualizer() {
@@ -1432,15 +1433,15 @@ class WeatherFlowLightningCard extends HTMLElement {
 
       // Tie tree height to the same meters -> scene-unit conversion used for
       // buildings/terrain (elevation_scale), instead of hand-authored scene
-      // units, so trees and buildings share one physical scale (option 1).
-      // A legibility boost is layered on top because true-to-scale trees at
-      // this default exaggeration are near sub-pixel on a 40km-wide map —
-      // this is a deliberate, documented compromise (option 2), not a bug.
+      // Tie tree height to the same meters -> scene-unit conversion used for
+      // buildings/terrain (elevation_scale), using a calibrated 2.2x legibility
+      // boost so trees naturally overtop 1-2 story residential houses without
+      // looming as giant skyscrapers over the landscape.
       const elevScaleForTrees =
         (this.config.elevation_scale !== undefined ? parseFloat(this.config.elevation_scale) : 1.5) / 1000;
-      const TREE_LEGIBILITY_BOOST = 6;
-      const TREE_REAL_HEIGHT_M = { pine: 20, oak: 15, birch: 18 };
-      // Height (at scale=1) of the hand-authored trunk+canopy geometry for each species below.
+      const TREE_LEGIBILITY_BOOST = 2.2;
+      const TREE_REAL_HEIGHT_M = { pine: 22, birch: 16, oak: 14 };
+      // Height (at scale=1) of the hand-authored trunk+canopy geometry for each species.
       const TREE_AUTHORED_HEIGHT = { pine: 0.7, oak: 0.55, birch: 0.67 };
       const TREE_HEIGHT_SCALE = {
         pine: (TREE_REAL_HEIGHT_M.pine * elevScaleForTrees * TREE_LEGIBILITY_BOOST) / TREE_AUTHORED_HEIGHT.pine,
@@ -1448,19 +1449,24 @@ class WeatherFlowLightningCard extends HTMLElement {
         birch: (TREE_REAL_HEIGHT_M.birch * elevScaleForTrees * TREE_LEGIBILITY_BOOST) / TREE_AUTHORED_HEIGHT.birch
       };
 
-      // Picks a species first, then returns its height-scaled matrix so tree
-      // size stays tied to TREE_HEIGHT_SCALE rather than a flat random range.
+      // Picks a species and computes natural height jitter and subtle aspect-ratio scale.
       const pushTreeInstance = (cx, y, cz) => {
-        const jitter = 0.85 + Math.random() * 0.4;
         const rotY = Math.random() * Math.PI * 2;
         const r = Math.random();
         const species = r < 0.33 ? 'pine' : r < 0.66 ? 'oak' : 'birch';
-        const scale = TREE_HEIGHT_SCALE[species] * jitter;
+
+        // Organic canopy height variation (0.85x to 1.15x continuous Gaussian-style spread)
+        const scaleJitter = 0.85 + Math.random() * 0.3;
+        const scaleY = TREE_HEIGHT_SCALE[species] * scaleJitter;
+
+        // Subtle aspect ratio per species (Pine slender 0.9x, Oak broad 1.1x, Birch 0.95x)
+        const widthMult = species === 'pine' ? 0.9 : species === 'oak' ? 1.1 : 0.95;
+        const scaleXZ = scaleY * widthMult;
 
         const dummy = new THREE.Object3D();
         dummy.position.set(cx, y, cz);
         dummy.rotation.y = rotY;
-        dummy.scale.set(scale, scale, scale);
+        dummy.scale.set(scaleXZ, scaleY, scaleXZ);
         dummy.updateMatrix();
 
         if (species === 'pine') {
@@ -2132,6 +2138,20 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
   }
 
+  // Dynamically scales station markers down when zooming in so weather station
+  // hardware stays well-proportioned relative to ground buildings and trees.
+  updateStationScale() {
+    if (!this.stationMeshes || this.zoomRadius === undefined) return;
+    const zoomPct = Math.max(0, Math.min(1, (this.zoomRadius - 3.0) / 42.0));
+    const stationScale = 0.15 + 0.85 * Math.pow(zoomPct, 0.75);
+
+    this.stationMeshes.forEach((sm) => {
+      if (sm && sm.mesh) {
+        sm.mesh.scale.set(stationScale, stationScale, stationScale);
+      }
+    });
+  }
+
   showTooltip(st, x, y) {
     if (!this.tooltip) return;
     let typeLabel = 'Discovered Station';
@@ -2418,20 +2438,16 @@ class WeatherFlowLightningCard extends HTMLElement {
       group.position.set(st.x, terrainY, st.z);
       group.userData = { station: st };
 
-      // Cheap fake-AO contact shadow, grounding the station visually even
-      // where the directional-shadow map doesn't reach (e.g. flat overcast
-      // lighting, or the tripod's own shadow being quite thin).
-      const contactShadow = this.createContactShadowDecal(0.65);
+      // Cheap fake-AO contact shadow, grounding the station visually
+      const contactShadow = this.createContactShadowDecal(0.5);
       contactShadow.position.y = 0.015;
       group.add(contactShadow);
 
-      // Ground anchor — a small tripod mount instead of a wide flat disc, so
-      // the station reads as pole/mast-mounted hardware (like a real Tempest
-      // installation) rather than standing on an oversized landing pad.
-      const hubHeight = 0.15;
-      const footRadius = 0.5;
+      // Sleek tripod ground mount
+      const hubHeight = 0.1;
+      const footRadius = 0.35;
       const legLength = Math.sqrt(footRadius * footRadius + hubHeight * hubHeight);
-      const legGeo = new THREE.CylinderGeometry(0.04, 0.05, legLength, 6);
+      const legGeo = new THREE.CylinderGeometry(0.03, 0.04, legLength, 6);
       const legMat = new THREE.MeshStandardMaterial({
         color: 0x334155,
         roughness: 0.6,
@@ -2449,15 +2465,16 @@ class WeatherFlowLightningCard extends HTMLElement {
         leg.receiveShadow = true;
         group.add(leg);
       }
-      // Small hub collar where the legs meet the mast base.
-      const hubGeo = new THREE.CylinderGeometry(0.12, 0.14, 0.1, 12);
+
+      // Hub collar at mast base
+      const hubGeo = new THREE.CylinderGeometry(0.09, 0.11, 0.08, 12);
       const hub = new THREE.Mesh(hubGeo, legMat);
       hub.position.y = hubHeight;
       hub.castShadow = true;
       hub.receiveShadow = true;
       group.add(hub);
 
-      const ringGeo = new THREE.RingGeometry(0.8, 1, 32);
+      const ringGeo = new THREE.RingGeometry(0.5, 0.65, 32);
       const ringMat = new THREE.MeshBasicMaterial({
         color: st.color,
         transparent: true,
@@ -2470,9 +2487,8 @@ class WeatherFlowLightningCard extends HTMLElement {
       group.add(ring);
       group.userData.pulseRing = ring;
 
-      // Tapered sensor mast instead of a uniform-width cylinder — reads
-      // more like real weather-station hardware.
-      const mastGeo = new THREE.CylinderGeometry(0.08, 0.15, 2.5, 8);
+      // Proportional sensor mast (1.6 units high)
+      const mastGeo = new THREE.CylinderGeometry(0.06, 0.1, 1.6, 8);
       const mastMat = new THREE.MeshStandardMaterial({
         color: st.color,
         roughness: 0.5,
@@ -2481,33 +2497,33 @@ class WeatherFlowLightningCard extends HTMLElement {
         opacity: 0.6
       });
       const cyl = new THREE.Mesh(mastGeo, mastMat);
-      cyl.position.y = 1.35;
+      cyl.position.y = 0.9;
       cyl.castShadow = true;
       group.add(cyl);
       group.userData.towerCyl = cyl;
 
-      // Small cross-arm near the top, evoking a real anemometer/antenna mount.
-      const armGeo = new THREE.BoxGeometry(0.9, 0.06, 0.06);
+      // Cross-arm near top
+      const armGeo = new THREE.BoxGeometry(0.6, 0.04, 0.04);
       const armMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.5, roughness: 0.4 });
       const arm = new THREE.Mesh(armGeo, armMat);
-      arm.position.y = 2.3;
+      arm.position.y = 1.5;
       arm.castShadow = true;
       group.add(arm);
 
-      const sphereGeo = new THREE.SphereGeometry(0.25, 16, 16);
+      // Anemometer / sensor sphere
+      const sphereGeo = new THREE.SphereGeometry(0.18, 16, 16);
       const sphereMat = new THREE.MeshBasicMaterial({
         color: st.color
       });
       const sphere = new THREE.Mesh(sphereGeo, sphereMat);
-      sphere.position.y = 2.7;
+      sphere.position.y = 1.8;
       group.add(sphere);
       group.userData.topSphere = sphere;
 
-      // Station ID label floating above the mast so each station is
-      // identifiable at a glance instead of relying only on color.
+      // Floating station ID label sprite
       const label = this.createRingLabelSprite(st.id);
-      label.scale.set(3.2, 1.6, 1);
-      label.position.y = 3.6;
+      label.scale.set(2.4, 1.2, 1);
+      label.position.y = 2.4;
       group.add(label);
 
       this.scene.add(group);
@@ -2517,6 +2533,8 @@ class WeatherFlowLightningCard extends HTMLElement {
         strikeIntensity: 0.0
       });
     });
+
+    this.updateStationScale();
   }
 
   initWeatherSystem() {
