@@ -55,7 +55,62 @@ const TiltShiftShader = {
       sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y + 2.0 * blur)) * 0.12245;
       sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y + 3.0 * blur)) * 0.0918;
       sum += texture2D(tDiffuse, vec2(vUv.x, vUv.y + 4.0 * blur)) * 0.051;
-      gl_FragColor = sum;
+    gl_FragColor = sum;
+    }
+  `
+};
+
+// Shader definition for Screen-Space Acoustic Shockwave Refraction Pass
+const ShockwaveShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uCenter: { value: new THREE.Vector2(0.5, 0.5) },
+    uTime: { value: -1.0 },
+    uAspect: { value: 1.0 },
+    uMaxRadius: { value: 0.75 },
+    uWaveWidth: { value: 0.08 },
+    uStrength: { value: 0.035 }
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform vec2 uCenter;
+    uniform float uTime;
+    uniform float uAspect;
+    uniform float uMaxRadius;
+    uniform float uWaveWidth;
+    uniform float uStrength;
+    varying vec2 vUv;
+
+    void main() {
+      if (uTime < 0.0 || uTime > 1.0) {
+        gl_FragColor = texture2D(tDiffuse, vUv);
+        return;
+      }
+
+      vec2 uvAspect = vec2(vUv.x * uAspect, vUv.y);
+      vec2 centerAspect = vec2(uCenter.x * uAspect, uCenter.y);
+      float dist = distance(uvAspect, centerAspect);
+
+      float currentRadius = uTime * uMaxRadius;
+      float diff = abs(dist - currentRadius);
+
+      if (diff < uWaveWidth && dist > 0.001) {
+        float waveProgress = 1.0 - (diff / uWaveWidth);
+        float waveFactor = sin(waveProgress * 3.14159);
+        float decay = (1.0 - uTime) * (1.0 - smoothstep(0.0, uMaxRadius, currentRadius));
+        vec2 dir = normalize(vUv - uCenter);
+        vec2 displacedUv = vUv + dir * waveFactor * uStrength * decay;
+        gl_FragColor = texture2D(tDiffuse, displacedUv);
+      } else {
+        gl_FragColor = texture2D(tDiffuse, vUv);
+      }
     }
   `
 };
@@ -969,6 +1024,10 @@ class WeatherFlowLightningCard extends HTMLElement {
     // Tilt-shift depth of field post-processing pass
     this.tiltShiftPass = new ShaderPass(TiltShiftShader);
     this.composer.addPass(this.tiltShiftPass);
+
+    // Screen-space acoustic shockwave refraction pass
+    this.shockwavePass = new ShaderPass(ShockwaveShader);
+    this.composer.addPass(this.shockwavePass);
   }
 
   // A soft, dark radial-gradient decal used as a cheap fake ambient-occlusion
@@ -3158,6 +3217,14 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     this.updateWeatherSystem(deltaTime);
 
+    // Advance screen-space acoustic shockwave refraction progress
+    if (this.shockwavePass && this.shockwavePass.uniforms && this.shockwavePass.uniforms.uTime.value >= 0.0) {
+      this.shockwavePass.uniforms.uTime.value += deltaTime * 1.4;
+      if (this.shockwavePass.uniforms.uTime.value > 1.0) {
+        this.shockwavePass.uniforms.uTime.value = -1.0;
+      }
+    }
+
     // Idle camera orbit
     if (this.config.auto_orbit !== false && now - this.lastInteractionTime > 8000) {
       this.cameraTheta += 0.0005;
@@ -3535,45 +3602,76 @@ class WeatherFlowLightningCard extends HTMLElement {
     });
   }
 
-  createLightningPath(start, end, segments = 10) {
-    const points = [];
-    const dir = new THREE.Vector3().subVectors(end, start);
-    points.push(start.clone());
+  // Recursive midpoint displacement algorithm (fractal L-system lightning generation)
+  createLightningPath(start, end, maxDepth = 4, displacementScale = 1.2) {
+    const points = [start.clone(), end.clone()];
 
-    for (let i = 1; i < segments; i++) {
-      const fraction = i / segments;
-      const point = new THREE.Vector3().addVectors(start, dir.clone().multiplyScalar(fraction));
-      const offsetAmount = (1.0 - fraction) * 1.0;
-      point.add(
-        new THREE.Vector3(
-          (Math.random() - 0.5) * offsetAmount,
-          (Math.random() - 0.5) * offsetAmount,
-          (Math.random() - 0.5) * offsetAmount
-        )
-      );
-      points.push(point);
-    }
+    const recurse = (depth, scale) => {
+      if (depth >= maxDepth) return;
+      const newPoints = [points[0]];
 
-    points.push(end.clone());
+      for (let i = 0; i < points.length - 1; i++) {
+        const p1 = points[i];
+        const p2 = points[i + 1];
+        const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+
+        // Perpendicular offset proportional to segment distance
+        const segVector = new THREE.Vector3().subVectors(p2, p1);
+        const dist = segVector.length();
+
+        const perp = new THREE.Vector3(
+          (Math.random() - 0.5) * dist * scale,
+          (Math.random() - 0.5) * dist * scale,
+          (Math.random() - 0.5) * dist * scale
+        );
+        mid.add(perp);
+
+        newPoints.push(mid);
+        newPoints.push(p2);
+      }
+
+      points.length = 0;
+      points.push(...newPoints);
+      recurse(depth + 1, scale * 0.55);
+    };
+
+    recurse(0, displacementScale);
     return points;
   }
 
-  createLightningBranches(start, end, segments = 8) {
-    const mainPath = this.createLightningPath(start, end, segments);
+  // Multi-order L-system branching electric discharge generator
+  createLightningBranches(start, end) {
+    const mainPath = this.createLightningPath(start, end, 4, 0.45);
     const paths = [mainPath];
 
-    for (let i = 1; i < mainPath.length - 2; i++) {
-      if (Math.random() < 0.25) {
+    // Primary branches off main trunk
+    for (let i = 1; i < mainPath.length - 3; i++) {
+      if (Math.random() < 0.35) {
         const branchStart = mainPath[i].clone();
-        const remainingFraction = 1.0 - i / mainPath.length;
-        const branchLength = remainingFraction * 6.0;
+        const frac = i / mainPath.length;
+        const branchLen = (1.0 - frac) * 5.0;
 
-        const dir = new THREE.Vector3().subVectors(end, start).normalize();
-        dir.add(new THREE.Vector3((Math.random() - 0.5) * 1.5, -0.2, (Math.random() - 0.5) * 1.5)).normalize();
+        const mainDir = new THREE.Vector3().subVectors(end, start).normalize();
+        const sideFork = new THREE.Vector3(
+          (Math.random() - 0.5) * 1.8,
+          -0.3 - Math.random() * 0.4,
+          (Math.random() - 0.5) * 1.8
+        ).normalize();
+        mainDir.add(sideFork).normalize();
 
-        const branchEnd = new THREE.Vector3().addVectors(branchStart, dir.multiplyScalar(branchLength));
-        const branchPath = this.createLightningPath(branchStart, branchEnd, 4);
-        paths.push(branchPath);
+        const branchEnd = new THREE.Vector3().addVectors(branchStart, mainDir.multiplyScalar(branchLen));
+        const subPath = this.createLightningPath(branchStart, branchEnd, 3, 0.35);
+        paths.push(subPath);
+
+        // Secondary micro-forks
+        for (let j = 1; j < subPath.length - 2; j++) {
+          if (Math.random() < 0.2) {
+            const microStart = subPath[j].clone();
+            const microDir = mainDir.clone().add(new THREE.Vector3((Math.random() - 0.5) * 2.0, -0.2, (Math.random() - 0.5) * 2.0)).normalize();
+            const microEnd = new THREE.Vector3().addVectors(microStart, microDir.multiplyScalar(branchLen * 0.4));
+            paths.push(this.createLightningPath(microStart, microEnd, 2, 0.25));
+          }
+        }
       }
     }
     return paths;
@@ -3581,8 +3679,6 @@ class WeatherFlowLightningCard extends HTMLElement {
 
   // Schedules a requestAnimationFrame callback and tracks its id in
   // this._activeRafIds so cleanupThreeJS() can cancel it on teardown.
-  // Without this, decayFlash/animateSequence chains kept firing after
-  // disconnectedCallback and dereferenced nulled-out THREE objects.
   _scheduleRaf(callback) {
     const id = requestAnimationFrame((t) => {
       this._activeRafIds.delete(id);
@@ -3598,6 +3694,18 @@ class WeatherFlowLightningCard extends HTMLElement {
     const terrainY = this.getTerrainHeight(x, z);
     const targetPos = new THREE.Vector3(x, terrainY, z);
     const startPos = new THREE.Vector3(x + (Math.random() - 0.5) * 4, terrainY + 18, z + (Math.random() - 0.5) * 4);
+
+    // Trigger acoustic shockwave refraction pass projected from strike location
+    if (this.camera && this.shockwavePass && this.shockwavePass.uniforms) {
+      const screenVec = targetPos.clone().project(this.camera);
+      const u = (screenVec.x + 1.0) / 2.0;
+      const v = (screenVec.y + 1.0) / 2.0;
+      this.shockwavePass.uniforms.uCenter.value.set(u, v);
+      this.shockwavePass.uniforms.uTime.value = 0.0;
+      const width = this.container ? this.container.clientWidth : 1;
+      const height = this.container ? this.container.clientHeight : 1;
+      this.shockwavePass.uniforms.uAspect.value = width / Math.max(1, height);
+    }
 
     // Local strike flash light — positioned at the strike site so the
     // ground/masts nearby are visibly lit up, like a real bolt's flash.
