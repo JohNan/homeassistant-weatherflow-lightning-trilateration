@@ -183,6 +183,9 @@ class WeatherFlowLightningCard extends HTMLElement {
     this._activeRafIds = new Set();
     // De-dupes noisy console.warn calls in the `set hass` hot path.
     this._warnedKeys = new Set();
+    this._cameraDirty = true;
+    this._lastBuildingIsFar = undefined;
+    this._lastForestIsFar = undefined;
   }
 
   static getConfigElement() {
@@ -288,7 +291,7 @@ class WeatherFlowLightningCard extends HTMLElement {
       const parsed = parseFloat(this.config.zoom_level);
       if (!isNaN(parsed)) {
         this.zoomRadius = parsed;
-        this.updateCameraPosition();
+        this._cameraDirty = true;
       }
     }
 
@@ -840,7 +843,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
         this.cameraTheta -= deltaX * 0.005;
         this.cameraPhi += deltaY * 0.005;
-        this.updateCameraPosition();
+        this._cameraDirty = true;
 
         previousMousePosition = { x: e.clientX, y: e.clientY };
       } else if (isPanning) {
@@ -857,7 +860,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.cameraTarget.y = Math.max(-5, Math.min(15, this.cameraTarget.y));
         this.cameraTarget.z = Math.max(-30, Math.min(30, this.cameraTarget.z));
 
-        this.updateCameraPosition();
+        this._cameraDirty = true;
         previousMousePosition = { x: e.clientX, y: e.clientY };
       } else {
         const rect = this.renderer.domElement.getBoundingClientRect();
@@ -885,7 +888,7 @@ class WeatherFlowLightningCard extends HTMLElement {
         this.hideTooltip();
         e.preventDefault();
         this.zoomRadius += e.deltaY * 0.02;
-        this.updateCameraPosition();
+        this._cameraDirty = true;
       },
       { passive: false }
     );
@@ -918,7 +921,7 @@ class WeatherFlowLightningCard extends HTMLElement {
 
           this.cameraTheta -= deltaX * 0.007;
           this.cameraPhi += deltaY * 0.007;
-          this.updateCameraPosition();
+          this._cameraDirty = true;
 
           previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         } else if (e.touches.length === 2) {
@@ -928,7 +931,7 @@ class WeatherFlowLightningCard extends HTMLElement {
           );
           const deltaDist = dist - touchStartDist;
           this.zoomRadius -= deltaDist * 0.15;
-          this.updateCameraPosition();
+          this._cameraDirty = true;
           touchStartDist = dist;
         }
       },
@@ -1500,6 +1503,8 @@ class WeatherFlowLightningCard extends HTMLElement {
     // Water shader materials — reset here too since the section below
     // reassigns this.waterMaterials = [] right before repopulating it.
     this.waterMaterials = [];
+    this._lastBuildingIsFar = undefined;
+    this._lastForestIsFar = undefined;
 
     // 1. Render Waterbodies (Lakes) — a Fresnel + scrolling-ripple shader
     // reads far more like real water than a flat translucent fill, so each
@@ -1934,8 +1939,8 @@ class WeatherFlowLightningCard extends HTMLElement {
       });
     }
 
-    this.updateForestLOD();
-    this.updateBuildingLOD();
+    this.updateForestLOD(true);
+    this.updateBuildingLOD(true);
   }
 
   // Creates a lake water ShaderMaterial with a scrolling dual-sine ripple
@@ -2059,11 +2064,14 @@ class WeatherFlowLightningCard extends HTMLElement {
   // whose footprint area is below BUILDING_LOD_MIN_AREA, keeping only the
   // larger, more visually significant structures — improving both draw-call
   // count and map legibility at low zoom (same principle as updateForestLOD()).
-  updateBuildingLOD() {
+  updateBuildingLOD(force = false) {
     if (!this.buildingMeshes || this.buildingMeshes.length === 0) return;
     const BUILDING_LOD_ZOOM_THRESHOLD = 45;
     const BUILDING_LOD_MIN_AREA = 0.02; // scene-unit² (~20,000 m² at 1 unit ≈ 1km)
     const isFar = (this.zoomRadius || 0) > BUILDING_LOD_ZOOM_THRESHOLD;
+
+    if (!force && this._lastBuildingIsFar === isFar) return;
+    this._lastBuildingIsFar = isFar;
 
     this.buildingMeshes.forEach(({ group, footprintArea }) => {
       group.visible = !isFar || footprintArea >= BUILDING_LOD_MIN_AREA;
@@ -2078,12 +2086,15 @@ class WeatherFlowLightningCard extends HTMLElement {
   // patch still reads clearly as "forest"; zooming back in reveals the
   // individual pine/oak/birch models again. Called on every camera zoom
   // change and once after (re)building the 3D features.
-  updateForestLOD() {
+  updateForestLOD(force = false) {
     if (!this.treeInstancedMeshes && !this.forestFloorMats) return;
     const FOREST_LOD_ZOOM_THRESHOLD = 45;
     const FOREST_LOD_FAR_OPACITY = 0.85;
     const FOREST_LOD_NEAR_OPACITY = 0.45;
     const isFar = (this.zoomRadius || 0) > FOREST_LOD_ZOOM_THRESHOLD;
+
+    if (!force && this._lastForestIsFar === isFar) return;
+    this._lastForestIsFar = isFar;
 
     if (this.treeInstancedMeshes) {
       this.treeInstancedMeshes.forEach((mesh) => {
@@ -3228,7 +3239,12 @@ class WeatherFlowLightningCard extends HTMLElement {
     // Idle camera orbit
     if (this.config.auto_orbit !== false && now - this.lastInteractionTime > 8000) {
       this.cameraTheta += 0.0005;
+      this._cameraDirty = true;
+    }
+
+    if (this._cameraDirty) {
       this.updateCameraPosition();
+      this._cameraDirty = false;
     }
 
     // Update heatmap
