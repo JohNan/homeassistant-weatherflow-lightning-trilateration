@@ -186,6 +186,7 @@ class WeatherFlowLightningCard extends HTMLElement {
     this._cameraDirty = true;
     this._lastBuildingIsFar = undefined;
     this._lastForestIsFar = undefined;
+    this._lastFrustumSize = undefined;
   }
 
   static getConfigElement() {
@@ -545,11 +546,16 @@ class WeatherFlowLightningCard extends HTMLElement {
     if (this.dirLight && this.dirLight.shadow && this.cameraTarget) {
       const frustumSize = Math.max(10, Math.min(32, this.zoomRadius * 0.65));
       const dCam = this.dirLight.shadow.camera;
-      dCam.left = -frustumSize;
-      dCam.right = frustumSize;
-      dCam.top = frustumSize;
-      dCam.bottom = -frustumSize;
-      dCam.updateProjectionMatrix();
+      // Step the frustum size by 2.0 to avoid recompiling the shadow map projection
+      // on every single micro-scroll frame during continuous zoom.
+      if (!this._lastFrustumSize || Math.abs(this._lastFrustumSize - frustumSize) > 2.0) {
+        dCam.left = -frustumSize;
+        dCam.right = frustumSize;
+        dCam.top = frustumSize;
+        dCam.bottom = -frustumSize;
+        dCam.updateProjectionMatrix();
+        this._lastFrustumSize = frustumSize;
+      }
     }
 
     // Dynamic Tilt-Shift Depth of Field: apply subtle lens blur at close zoom
