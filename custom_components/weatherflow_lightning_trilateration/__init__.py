@@ -1970,7 +1970,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
             await resources.async_load()
 
     base_url = "/weatherflow_lightning_trilateration/weatherflow-lightning-card.js"
-    cache_buster = await hass.async_add_executor_job(_card_bundle_cache_buster)
+    cache_buster = "58483e7"
     url = f"{base_url}?v={cache_buster}"
 
     existing_item = None

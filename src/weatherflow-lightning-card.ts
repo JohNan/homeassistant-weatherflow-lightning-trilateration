@@ -2389,36 +2389,37 @@ class WeatherFlowLightningCard extends HTMLElement {
 
     const activeIds = new Set();
 
-    for (let i = 0; i < this.strikeHistory.length; i++) {
+    for (let i = this.strikeHistory.length - 1; i >= 0; i--) {
       const s = this.strikeHistory[i];
       const age = nowVirtual - s.time;
-      if (age >= 0 && age <= lifespan) {
-        activeIds.add(s.id);
-        const pct = age / lifespan;
-        const opacity = 0.7 * (1.0 - pct);
-        const scale = 1.0 - pct * 0.4;
+      if (age < 0) continue;
+      if (age > lifespan) break;
 
-        let hm = this.heatmapMeshes.get(s.id);
-        if (!hm) {
-          const mat = new THREE.MeshBasicMaterial({
-            color: 0xf59e0b,
-            transparent: true,
-            opacity: opacity,
-            depthWrite: false
-          });
-          const mesh = new THREE.Mesh(this.heatGeo, mat);
-          const y = this.getTerrainHeight(s.x, s.z);
-          mesh.position.set(s.x, y, s.z);
-          mesh.scale.set(scale, scale, scale);
-          this.scene.add(mesh);
+      activeIds.add(s.id);
+      const pct = age / lifespan;
+      const opacity = 0.7 * (1.0 - pct);
+      const scale = 1.0 - pct * 0.4;
 
-          hm = { mesh, material: mat };
-          this.heatmapMeshes.set(s.id, hm);
-        } else {
-          hm.material.opacity = opacity;
-          hm.mesh.scale.set(scale, scale, scale);
-          hm.mesh.position.y = this.getTerrainHeight(s.x, s.z);
-        }
+      let hm = this.heatmapMeshes.get(s.id);
+      if (!hm) {
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
+          transparent: true,
+          opacity: opacity,
+          depthWrite: false
+        });
+        const mesh = new THREE.Mesh(this.heatGeo, mat);
+        const y = this.getTerrainHeight(s.x, s.z);
+        mesh.position.set(s.x, y, s.z);
+        mesh.scale.set(scale, scale, scale);
+        this.scene.add(mesh);
+
+        hm = { mesh, material: mat };
+        this.heatmapMeshes.set(s.id, hm);
+      } else {
+        if (Math.abs(hm.material.opacity - opacity) > 0.01) hm.material.opacity = opacity;
+        hm.mesh.scale.set(scale, scale, scale);
+        hm.mesh.position.y = this.getTerrainHeight(s.x, s.z);
       }
     }
 
@@ -3485,19 +3486,26 @@ class WeatherFlowLightningCard extends HTMLElement {
         : Date.now() - STRIKE_HISTORY_WINDOW_MS;
     const maxTime = Date.now();
 
-    if (this.slider) this.slider.disabled = false;
+    if (this.slider && this.slider.disabled) this.slider.disabled = false;
+
+    const now = Date.now();
+    const shouldUpdateUi = !this._lastUiUpdateTime || now - this._lastUiUpdateTime > 100;
 
     if (this.playbackMode === 'live') {
       this.playbackTime = maxTime;
-      if (this.slider) {
-        this.slider.min = minTime.toString();
-        this.slider.max = maxTime.toString();
-        this.slider.value = maxTime.toString();
+      if (shouldUpdateUi) {
+        this._lastUiUpdateTime = now;
+        if (this.slider) {
+          const minTimeStr = minTime.toString();
+          const maxTimeStr = maxTime.toString();
+          if (this.slider.min !== minTimeStr) this.slider.min = minTimeStr;
+          if (this.slider.max !== maxTimeStr) this.slider.max = maxTimeStr;
+          if (this.slider.value !== maxTimeStr) this.slider.value = maxTimeStr;
+        }
+        if (this.timeLabel && this.timeLabel.innerText !== 'Live') this.timeLabel.innerText = 'Live';
       }
-      if (this.timeLabel) this.timeLabel.innerText = 'Live';
     } else {
       if (this.isPlaying) {
-        const now = Date.now();
         const dt = now - (this.lastPlayTickTime || now);
         this.lastPlayTickTime = now;
 
@@ -3507,20 +3515,31 @@ class WeatherFlowLightningCard extends HTMLElement {
           this.playbackTime = maxTime;
           this.setLiveMode();
         } else {
-          if (this.slider) {
-            this.slider.min = minTime.toString();
-            this.slider.max = maxTime.toString();
-            this.slider.value = this.playbackTime.toString();
+          if (shouldUpdateUi) {
+            this._lastUiUpdateTime = now;
+            if (this.slider) {
+              const minTimeStr = minTime.toString();
+              const maxTimeStr = maxTime.toString();
+              const valStr = this.playbackTime.toString();
+              if (this.slider.min !== minTimeStr) this.slider.min = minTimeStr;
+              if (this.slider.max !== maxTimeStr) this.slider.max = maxTimeStr;
+              if (this.slider.value !== valStr) this.slider.value = valStr;
+            }
+            this.updateTimeLabel();
           }
-          this.updateTimeLabel();
           this.checkAndTriggerPlaybackStrikes();
         }
       } else {
-        if (this.slider) {
-          this.slider.min = minTime.toString();
-          this.slider.max = maxTime.toString();
+        if (shouldUpdateUi) {
+          this._lastUiUpdateTime = now;
+          if (this.slider) {
+            const minTimeStr = minTime.toString();
+            const maxTimeStr = maxTime.toString();
+            if (this.slider.min !== minTimeStr) this.slider.min = minTimeStr;
+            if (this.slider.max !== maxTimeStr) this.slider.max = maxTimeStr;
+          }
+          this.updateTimeLabel();
         }
-        this.updateTimeLabel();
       }
     }
   }
@@ -3558,9 +3577,10 @@ class WeatherFlowLightningCard extends HTMLElement {
     this.isPlaying = false;
     this.updatePlayBtnIcon();
     if (this.slider) {
-      this.slider.value = Date.now();
+      const valStr = Date.now().toString();
+      if (this.slider.value !== valStr) this.slider.value = valStr;
     }
-    if (this.timeLabel) {
+    if (this.timeLabel && this.timeLabel.innerText !== 'Live') {
       this.timeLabel.innerText = 'Live';
     }
     this.strikeHistory.forEach((s) => (s.animated = true));
@@ -3591,7 +3611,10 @@ class WeatherFlowLightningCard extends HTMLElement {
     }
 
     if (this.timeLabel) {
-      this.timeLabel.innerText = `${timeStr} (${relStr})`;
+      const newText = `${timeStr} (${relStr})`;
+      if (this.timeLabel.innerText !== newText) {
+        this.timeLabel.innerText = newText;
+      }
     }
   }
 
